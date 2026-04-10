@@ -1,0 +1,21 @@
+[package]
+name = "mdev"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "mdev"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+colored = "2"
+indicatif = "0.17"
+dialoguer = "0.11"
+regex = "1"
+dirs = "5"
+anyhow = "1"
