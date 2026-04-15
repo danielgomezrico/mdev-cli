@@ -7,8 +7,8 @@ mod runner;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use commands::{
-    clear::ClearArgs, doctor, emulator::EmulatorArgs, keystore::KeystoreArgs, purge::PurgeArgs,
-    uninstall::UninstallArgs,
+    clear::ClearArgs, completions::CompletionsArgs, doctor, emulator::EmulatorArgs,
+    keystore::KeystoreArgs, purge::PurgeArgs, uninstall::UninstallArgs,
 };
 use runner::ProcessRunner;
 
@@ -42,6 +42,8 @@ enum Commands {
     Emulator(EmulatorArgs),
     /// Check development environment
     Doctor,
+    /// Generate shell completion script (bash, zsh, fish, powershell, elvish)
+    Completions(CompletionsArgs),
 }
 
 fn main() {
@@ -67,6 +69,7 @@ fn main() {
         Some(Commands::Keystore(ref args)) => commands::keystore::run(args, &runner),
         Some(Commands::Emulator(ref args)) => commands::emulator::run(args, &runner),
         Some(Commands::Doctor) => doctor::run(&runner),
+        Some(Commands::Completions(ref args)) => commands::completions::run::<Cli>(args),
     };
 
     std::process::exit(exit_code);

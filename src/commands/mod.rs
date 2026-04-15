@@ -1,4 +1,5 @@
 pub mod clear;
+pub mod completions;
 pub mod doctor;
 pub mod emulator;
 pub mod keystore;

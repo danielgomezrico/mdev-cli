@@ -66,6 +66,31 @@ mdev emulator config --avd Pixel_9
 mdev doctor
 ```
 
+## Shell completions
+
+`mdev completions <shell>` prints a completion script to stdout. Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
+
+**zsh** (ensure `~/.zfunc` is on `fpath` and `autoload -U compinit && compinit` runs in `~/.zshrc`):
+
+```sh
+mkdir -p ~/.zfunc
+mdev completions zsh > ~/.zfunc/_mdev
+```
+
+**bash**:
+
+```sh
+mdev completions bash > ~/.local/share/bash-completion/completions/mdev
+```
+
+**fish**:
+
+```sh
+mdev completions fish > ~/.config/fish/completions/mdev.fish
+```
+
+Restart the shell after installing.
+
 ## Flags
 
 Most commands support:
