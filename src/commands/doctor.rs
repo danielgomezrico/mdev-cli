@@ -35,8 +35,8 @@ pub fn run(runner: &dyn Runner) -> i32 {
         let result = runner.run("flutter", &["--version", "--machine"], None);
         if result.is_success() && !result.stdout.is_empty() {
             // Parse frameworkVersion from JSON
-            let version = parse_flutter_version(&result.stdout)
-                .unwrap_or_else(|| "unknown".to_string());
+            let version =
+                parse_flutter_version(&result.stdout).unwrap_or_else(|| "unknown".to_string());
             check_pass(&format!("Flutter SDK: {}", version));
             pass_count += 1;
         } else {
@@ -104,7 +104,9 @@ pub fn run(runner: &dyn Runner) -> i32 {
                         fail_count += 1;
                     }
                 } else {
-                    check_fail("Android SDK licenses not accepted. Run: flutter doctor --android-licenses");
+                    check_fail(
+                        "Android SDK licenses not accepted. Run: flutter doctor --android-licenses",
+                    );
                     fail_count += 1;
                 }
             }
@@ -160,7 +162,9 @@ pub fn run(runner: &dyn Runner) -> i32 {
                 check_pass(&format!("xcrun: {}", first_line));
                 pass_count += 1;
             } else {
-                check_fail("xcrun not found. Install Xcode command line tools: xcode-select --install");
+                check_fail(
+                    "xcrun not found. Install Xcode command line tools: xcode-select --install",
+                );
                 fail_count += 1;
             }
         } else {
@@ -190,11 +194,7 @@ pub fn run(runner: &dyn Runner) -> i32 {
     // 9. iOS simulator runtimes (macOS only)
     {
         if cfg!(target_os = "macos") {
-            let result = runner.run(
-                "xcrun",
-                &["simctl", "list", "runtimes", "--json"],
-                None,
-            );
+            let result = runner.run("xcrun", &["simctl", "list", "runtimes", "--json"], None);
             if result.is_success() && !result.stdout.is_empty() {
                 let has_ios = check_ios_runtimes(&result.stdout);
                 if has_ios {

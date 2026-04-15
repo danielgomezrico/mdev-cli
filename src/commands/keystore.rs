@@ -43,10 +43,7 @@ pub fn run(args: &KeystoreArgs, runner: &dyn Runner) -> i32 {
     // Interactive prompts
     let keystore_file = prompt_non_empty(
         &logger,
-        &format!(
-            "Keystore file [{}]",
-            default_keystore_path.display()
-        ),
+        &format!("Keystore file [{}]", default_keystore_path.display()),
         &default_keystore_path.to_string_lossy(),
     );
 
@@ -102,7 +99,11 @@ pub fn run(args: &KeystoreArgs, runner: &dyn Runner) -> i32 {
         return 1;
     }
 
-    logger.success(&format!("{} Keystore generated: {}", "✓".green(), keystore_file));
+    logger.success(&format!(
+        "{} Keystore generated: {}",
+        "✓".green(),
+        keystore_file
+    ));
 
     // Write android/key.properties
     let key_props_path = if let Some(ref root) = project_root {
@@ -111,8 +112,8 @@ pub fn run(args: &KeystoreArgs, runner: &dyn Runner) -> i32 {
         PathBuf::from("android/key.properties")
     };
 
-    let keystore_abs = std::fs::canonicalize(&keystore_file)
-        .unwrap_or_else(|_| PathBuf::from(&keystore_file));
+    let keystore_abs =
+        std::fs::canonicalize(&keystore_file).unwrap_or_else(|_| PathBuf::from(&keystore_file));
 
     let props_content = format!(
         "storePassword={}\nkeyPassword={}\nkeyAlias={}\nstoreFile={}\n",
@@ -150,7 +151,13 @@ pub fn run(args: &KeystoreArgs, runner: &dyn Runner) -> i32 {
         let app_id = app_info
             .android_package_id
             .as_deref()
-            .or_else(|| if app_info.flutter_name.is_empty() { None } else { Some(app_info.flutter_name.as_str()) })
+            .or_else(|| {
+                if app_info.flutter_name.is_empty() {
+                    None
+                } else {
+                    Some(app_info.flutter_name.as_str())
+                }
+            })
             .unwrap_or("");
         if !app_id.is_empty() {
             logger.info(&format!("  3. App detected: {}", app_id));
@@ -205,7 +212,10 @@ fn prompt_password_confirmed(logger: &Logger, prompt: &str, min_len: usize) -> S
     loop {
         let pw = logger.prompt_password(prompt);
         if pw.len() < min_len {
-            logger.err(&format!("  Password must be at least {} characters.", min_len));
+            logger.err(&format!(
+                "  Password must be at least {} characters.",
+                min_len
+            ));
             continue;
         }
         let confirm = logger.prompt_password(&format!("Confirm {}", prompt));

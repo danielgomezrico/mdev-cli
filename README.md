@@ -10,6 +10,7 @@ Rust CLI toolkit for Flutter/Android/iOS developers. Auto-detects your project a
 | `mdev clear` | Clear app data and restart on connected devices |
 | `mdev purge` | Purge build artifacts and caches (flutter, gradle, pub, pods, DerivedData) |
 | `mdev keystore` | Interactively generate an Android signing keystore |
+| `mdev emulator config` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
 | `mdev doctor` | Check development environment (flutter, adb, java, xcode, etc.) |
 
 ## Installation
@@ -54,6 +55,12 @@ mdev purge --flutter --gradle
 
 # Generate a release keystore
 mdev keystore
+
+# Configure all local Android AVDs (default: showAVDManager=no)
+mdev emulator config              # apply defaults
+mdev emulator config -n           # dry run
+mdev emulator config --set hw.keyboard=yes --backup
+mdev emulator config --avd Pixel_9
 
 # Check your dev environment
 mdev doctor

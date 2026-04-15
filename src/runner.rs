@@ -72,7 +72,11 @@ impl Runner for ProcessRunner {
     }
 
     fn which(&self, executable: &str) -> Option<String> {
-        let which_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+        let which_cmd = if cfg!(target_os = "windows") {
+            "where"
+        } else {
+            "which"
+        };
 
         match Command::new(which_cmd).arg(executable).output() {
             Ok(output) if output.status.success() => {

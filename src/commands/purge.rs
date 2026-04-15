@@ -110,8 +110,16 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
     let explicit_flags = args.flutter || args.pub_cache || args.gradle || args.android || args.ios;
 
     // Determine global targets
-    let do_pub = if explicit_flags { args.pub_cache } else { has_flutter };
-    let do_gradle = if explicit_flags { args.gradle } else { has_android };
+    let do_pub = if explicit_flags {
+        args.pub_cache
+    } else {
+        has_flutter
+    };
+    let do_gradle = if explicit_flags {
+        args.gradle
+    } else {
+        has_android
+    };
     let do_derived_data = if explicit_flags {
         args.ios && cfg!(target_os = "macos")
     } else {
@@ -138,7 +146,8 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
             ProjectType::Flutter => {
                 let do_flutter_clean = !explicit_flags || args.flutter;
                 let do_android_build = !explicit_flags || args.android || args.flutter;
-                let do_ios_pods = (!explicit_flags || args.ios || args.flutter) && cfg!(target_os = "macos");
+                let do_ios_pods =
+                    (!explicit_flags || args.ios || args.flutter) && cfg!(target_os = "macos");
 
                 if do_flutter_clean {
                     run_flutter_clean(root, args.dry_run, args.verbose, runner, &logger);
@@ -243,11 +252,7 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         if confirmed && !args.dry_run {
             if do_pub {
                 // Try flutter pub cache clean -f first
-                let clean_result = runner.run(
-                    "flutter",
-                    &["pub", "cache", "clean", "-f"],
-                    None,
-                );
+                let clean_result = runner.run("flutter", &["pub", "cache", "clean", "-f"], None);
                 if !clean_result.is_success() {
                     let pub_cache = home.join(".pub-cache");
                     if pub_cache.exists() {

@@ -67,7 +67,10 @@ impl AppDetector {
             return (info, Some(ios_root));
         }
 
-        (AppInfo::new(String::new(), ProjectType::Unknown, None, None), None)
+        (
+            AppInfo::new(String::new(), ProjectType::Unknown, None, None),
+            None,
+        )
     }
 }
 

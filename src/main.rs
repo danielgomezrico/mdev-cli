@@ -7,10 +7,7 @@ mod runner;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use commands::{
-    clear::ClearArgs,
-    doctor,
-    keystore::KeystoreArgs,
-    purge::PurgeArgs,
+    clear::ClearArgs, doctor, emulator::EmulatorArgs, keystore::KeystoreArgs, purge::PurgeArgs,
     uninstall::UninstallArgs,
 };
 use runner::ProcessRunner;
@@ -41,6 +38,8 @@ enum Commands {
     Purge(PurgeArgs),
     /// Generate an Android signing keystore
     Keystore(KeystoreArgs),
+    /// Manage Android AVD emulators (e.g. config tweaks)
+    Emulator(EmulatorArgs),
     /// Check development environment
     Doctor,
 }
@@ -66,6 +65,7 @@ fn main() {
         Some(Commands::Clear(ref args)) => commands::clear::run(args, &runner),
         Some(Commands::Purge(ref args)) => commands::purge::run(args, &runner),
         Some(Commands::Keystore(ref args)) => commands::keystore::run(args, &runner),
+        Some(Commands::Emulator(ref args)) => commands::emulator::run(args, &runner),
         Some(Commands::Doctor) => doctor::run(&runner),
     };
 

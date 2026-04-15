@@ -17,7 +17,7 @@ release:
 	cargo build --release
 
 install:
-	cargo install --path .
+	cargo install --path . --force
 
 uninstall:
 	cargo uninstall mdev
