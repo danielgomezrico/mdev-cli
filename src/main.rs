@@ -31,18 +31,25 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Uninstall the app from connected devices
+    #[command(visible_alias = "u")]
     Uninstall(UninstallArgs),
     /// Clear app data and restart on connected devices
+    #[command(visible_alias = "c")]
     Clear(ClearArgs),
     /// Purge build artifacts and caches
+    #[command(visible_alias = "p")]
     Purge(PurgeArgs),
     /// Generate an Android signing keystore
+    #[command(visible_alias = "k")]
     Keystore(KeystoreArgs),
     /// Manage Android AVD emulators (e.g. config tweaks)
+    #[command(visible_alias = "e")]
     Emulator(EmulatorArgs),
     /// Check development environment
+    #[command(visible_alias = "d")]
     Doctor,
     /// Generate shell completion script (bash, zsh, fish, powershell, elvish)
+    #[command(visible_alias = "s")]
     Completions(CompletionsArgs),
 }
 

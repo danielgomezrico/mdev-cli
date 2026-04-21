@@ -19,11 +19,13 @@ pub enum EmulatorCommands {
     /// Use --set key=value to add or override tweaks. Keys are case-sensitive
     /// and emulator-version-dependent; verify against Android emulator docs
     /// before trusting non-default keys.
+    #[command(visible_alias = "c")]
     Config(EmulatorConfigArgs),
     /// List known AVD config.ini tweaks with human-readable descriptions.
     ///
     /// Useful to discover what you can pass to `mdev emulator config --set`.
     /// Values here are recommended defaults; tweak per your setup.
+    #[command(visible_alias = "l")]
     List,
 }
 

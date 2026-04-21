@@ -15,14 +15,18 @@ Rust CLI toolkit for Flutter/Android/iOS developers. Auto-detects your project a
 
 ## Commands
 
-| Command | Description |
-|---|---|
-| `mdev uninstall` | Uninstall the app from connected devices/emulators |
-| `mdev clear` | Clear app data and restart on connected devices |
-| `mdev purge` | Purge build artifacts and caches (flutter, gradle, pub, pods, DerivedData) |
-| `mdev keystore` | Interactively generate an Android signing keystore |
-| `mdev emulator config` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
-| `mdev doctor` | Check development environment (flutter, adb, java, xcode, etc.) |
+Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
+
+| Command | Alias | Description |
+|---|---|---|
+| `mdev uninstall` | `u` | Uninstall the app from connected devices/emulators |
+| `mdev clear` | `c` | Clear app data and restart on connected devices |
+| `mdev purge` | `p` | Purge build artifacts and caches (flutter, gradle, pub, pods, DerivedData) |
+| `mdev keystore` | `k` | Interactively generate an Android signing keystore |
+| `mdev emulator config` | `e c` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
+| `mdev emulator list` | `e l` | List known AVD config.ini tweaks |
+| `mdev doctor` | `d` | Check development environment (flutter, adb, java, xcode, etc.) |
+| `mdev completions` | `s` | Generate shell completion script |
 
 ## Installation
 
