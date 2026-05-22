@@ -1,14 +1,19 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::models::{AppInfo, ProjectType};
+use crate::models::{AppInfo, NodePm, ProjectType, PyFw};
 
 const MAX_LEVELS: usize = 10;
+/// Maximum bytes to scan when looking for the FastAPI substring in
+/// requirement / project files. 64 KiB is plenty for `pyproject.toml`
+/// and `requirements.txt` while bounding cost.
+const SCAN_BYTES: usize = 64 * 1024;
 
 // Kotlin DSL: applicationId = "com.example.app"
 fn kotlin_dsl_pattern() -> &'static Regex {
@@ -47,24 +52,38 @@ impl AppDetector {
     }
 
     pub fn detect_with_root(&self, start_dir: &Path) -> (AppInfo, Option<PathBuf>) {
-        // Try Flutter project (pubspec.yaml)
-        if let Some(root) = find_project_root(start_dir) {
-            let info = detect_flutter_project(&root);
-            return (info, Some(root));
-        }
-
-        // Pure Android
-        if let Some(android_root) = find_android_root(start_dir) {
-            let android_id = detect_android_id(&android_root);
-            let info = AppInfo::new(String::new(), ProjectType::Android, android_id, None);
-            return (info, Some(android_root));
-        }
-
-        // Pure iOS
-        if let Some(ios_root) = find_ios_root(start_dir) {
-            let bundle_id = detect_ios_bundle_id(&ios_root);
-            let info = AppInfo::new(String::new(), ProjectType::Ios, None, bundle_id);
-            return (info, Some(ios_root));
+        // Walk up to MAX_LEVELS, asking classify_dir for each candidate
+        // directory. First non-Unknown match wins (deepest-first walk
+        // preserves the previous Flutter/Android/iOS behaviour and
+        // gives nested projects priority over their parents).
+        let mut current = start_dir.to_path_buf();
+        for _ in 0..MAX_LEVELS {
+            let pt = classify_dir(&current);
+            if pt != ProjectType::Unknown {
+                let info = build_app_info(&current, &pt);
+                return (info, Some(current));
+            }
+            // Special case for "we are inside android/" pointing at a
+            // pure-Android project root one level up.
+            if (current.join("build.gradle.kts").exists()
+                || current.join("build.gradle").exists())
+                && !current.join("app").join("build.gradle.kts").exists()
+                && !current.join("app").join("build.gradle").exists()
+            {
+                if let Some(parent) = current.parent() {
+                    let parent = parent.to_path_buf();
+                    let pt = classify_dir(&parent);
+                    if pt != ProjectType::Unknown {
+                        let info = build_app_info(&parent, &pt);
+                        return (info, Some(parent));
+                    }
+                }
+            }
+            let parent = match current.parent() {
+                Some(p) if p != current => p.to_path_buf(),
+                _ => break,
+            };
+            current = parent;
         }
 
         (
@@ -74,71 +93,147 @@ impl AppDetector {
     }
 }
 
+/// Build an `AppInfo` for a detected project root + type. Carries the
+/// flutter name + android/ios identifiers for the legacy variants;
+/// other variants get an empty/None payload.
+fn build_app_info(root: &Path, pt: &ProjectType) -> AppInfo {
+    match pt {
+        ProjectType::Flutter => detect_flutter_project(root),
+        ProjectType::Android => {
+            let android_id = detect_android_id(root);
+            AppInfo::new(String::new(), ProjectType::Android, android_id, None)
+        }
+        ProjectType::Ios => {
+            let bundle_id = detect_ios_bundle_id(root);
+            AppInfo::new(String::new(), ProjectType::Ios, None, bundle_id)
+        }
+        other => AppInfo::new(String::new(), other.clone(), None, None),
+    }
+}
+
+/// Classify a single directory by checking anchor files in the
+/// documented precedence order. First match wins; falls back to
+/// `ProjectType::Unknown`.
+fn classify_dir(dir: &Path) -> ProjectType {
+    // 1. Flutter
+    if dir.join("pubspec.yaml").exists() {
+        return ProjectType::Flutter;
+    }
+    // 2. Rails (Gemfile + config/application.rb)
+    let has_gemfile = dir.join("Gemfile").exists();
+    if has_gemfile && dir.join("config").join("application.rb").exists() {
+        return ProjectType::Ruby { rails: true };
+    }
+    // 3. Django (manage.py + python project marker)
+    if dir.join("manage.py").exists()
+        && (dir.join("pyproject.toml").exists()
+            || dir.join("requirements.txt").exists()
+            || dir.join("Pipfile").exists())
+    {
+        return ProjectType::Python {
+            framework: Some(PyFw::Django),
+        };
+    }
+    // 4. Python FastAPI — substring scan of pyproject.toml /
+    //    requirements.txt (first 64 KiB, case-insensitive).
+    let pyproject = dir.join("pyproject.toml");
+    let requirements = dir.join("requirements.txt");
+    let pyproject_exists = pyproject.exists();
+    let requirements_exists = requirements.exists();
+    if (pyproject_exists && file_head_contains_ci(&pyproject, "fastapi"))
+        || (requirements_exists && file_head_contains_ci(&requirements, "fastapi"))
+    {
+        return ProjectType::Python {
+            framework: Some(PyFw::FastAPI),
+        };
+    }
+    // 5. Python (generic)
+    if pyproject_exists
+        || requirements_exists
+        || dir.join("Pipfile").exists()
+        || dir.join("uv.lock").exists()
+        || dir.join("poetry.lock").exists()
+    {
+        return ProjectType::Python {
+            framework: Some(PyFw::Generic),
+        };
+    }
+    // 6. Node
+    if dir.join("package.json").exists() {
+        let manager = if dir.join("pnpm-lock.yaml").exists() {
+            NodePm::Pnpm
+        } else if dir.join("yarn.lock").exists() {
+            NodePm::Yarn
+        } else if dir.join("bun.lockb").exists() {
+            NodePm::Bun
+        } else {
+            NodePm::Npm
+        };
+        return ProjectType::Node { manager };
+    }
+    // 7. Rust
+    if dir.join("Cargo.toml").exists() {
+        return ProjectType::Rust;
+    }
+    // 8. Go
+    if dir.join("go.mod").exists() {
+        return ProjectType::Go;
+    }
+    // 9. Ruby (non-Rails) — Gemfile only
+    if has_gemfile {
+        return ProjectType::Ruby { rails: false };
+    }
+    // 10. Android (app/build.gradle{,.kts})
+    if dir.join("app").join("build.gradle.kts").exists()
+        || dir.join("app").join("build.gradle").exists()
+    {
+        return ProjectType::Android;
+    }
+    // 11. iOS (*.xcodeproj direct child)
+    if dir_has_xcodeproj(dir) {
+        return ProjectType::Ios;
+    }
+    ProjectType::Unknown
+}
+
+/// True if `dir` directly contains a `*.xcodeproj` directory.
+fn dir_has_xcodeproj(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(ext) = path.extension() {
+                if ext == "xcodeproj" {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Read the first `SCAN_BYTES` of `path` (lossy UTF-8) and return
+/// true iff `needle` (already lowercase) is found case-insensitively.
+/// Returns false on any I/O error.
+fn file_head_contains_ci(path: &Path, needle: &str) -> bool {
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = vec![0u8; SCAN_BYTES];
+    let n = match file.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    let text = String::from_utf8_lossy(&buf[..n]);
+    text.to_lowercase().contains(needle)
+}
+
 impl Default for AppDetector {
     fn default() -> Self {
         Self::new()
     }
-}
-
-fn find_project_root(dir: &Path) -> Option<PathBuf> {
-    let mut current = dir.to_path_buf();
-    for _ in 0..MAX_LEVELS {
-        if current.join("pubspec.yaml").exists() {
-            return Some(current);
-        }
-        let parent = match current.parent() {
-            Some(p) if p != current => p.to_path_buf(),
-            _ => break,
-        };
-        current = parent;
-    }
-    None
-}
-
-fn find_android_root(dir: &Path) -> Option<PathBuf> {
-    let mut current = dir.to_path_buf();
-    for _ in 0..MAX_LEVELS {
-        // Check for app/build.gradle.kts or app/build.gradle
-        if current.join("app").join("build.gradle.kts").exists()
-            || current.join("app").join("build.gradle").exists()
-        {
-            return Some(current);
-        }
-        // Check if we're inside android/ folder (build.gradle.kts or build.gradle at current)
-        if current.join("build.gradle.kts").exists() || current.join("build.gradle").exists() {
-            return current.parent().map(|p| p.to_path_buf());
-        }
-        let parent = match current.parent() {
-            Some(p) if p != current => p.to_path_buf(),
-            _ => break,
-        };
-        current = parent;
-    }
-    None
-}
-
-fn find_ios_root(dir: &Path) -> Option<PathBuf> {
-    let mut current = dir.to_path_buf();
-    for _ in 0..MAX_LEVELS {
-        if let Ok(entries) = fs::read_dir(&current) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if let Some(ext) = path.extension() {
-                        if ext == "xcodeproj" {
-                            return Some(current);
-                        }
-                    }
-                }
-            }
-        }
-        let parent = match current.parent() {
-            Some(p) if p != current => p.to_path_buf(),
-            _ => break,
-        };
-        current = parent;
-    }
-    None
 }
 
 fn detect_flutter_project(root: &Path) -> AppInfo {

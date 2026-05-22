@@ -1,5 +1,153 @@
-use std::path::Path;
-use crate::commands::purge::PurgeArgs;
+use colored::Colorize;
+use std::path::{Path, PathBuf};
 
+use crate::commands::purge::PurgeArgs;
+use crate::commands::purge::common::{self, delete_path_verbose};
+use crate::logger::Logger;
+
+/// Per-project Ruby/Rails cleanup.
+///
+/// Rails-ness is recovered from disk (`config/application.rb`) rather than
+/// threaded through the dispatch signature, so the four-arg `run` contract
+/// matches the other per-project-type modules.
+pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
+    let logger = Logger::new();
+
+    // Always-on Ruby paths.
+    let ruby_paths: [PathBuf; 2] = [root.join("vendor").join("bundle"), root.join(".bundle")];
+    for p in &ruby_paths {
+        clean_path(p, "ruby", dry_run, verbose, &logger);
+    }
+
+    // Rails-only extras.
+    let is_rails = root.join("config").join("application.rb").exists();
+    if !is_rails {
+        return;
+    }
+
+    let tmp_cache = root.join("tmp").join("cache");
+    clean_path(&tmp_cache, "rails", dry_run, verbose, &logger);
+
+    // Rotate Rails logs: every `log/*.log`. Skip the whole block if `log/`
+    // is absent so we don't print noise.
+    let log_dir = root.join("log");
+    if !log_dir.is_dir() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(&log_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|s| s.to_str()) != Some("log") {
+            continue;
+        }
+        clean_file(&path, "rails", dry_run, verbose, &logger);
+    }
+}
+
+/// Globals for Ruby — gated by `common::confirm`. Not wired into dispatch yet.
 #[allow(dead_code)]
-pub fn run(_args: &PurgeArgs, _root: &Path, _dry_run: bool, _verbose: bool) {}
+pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
+    let logger = Logger::new();
+    let home = dirs::home_dir().unwrap_or_default();
+
+    let candidates: [PathBuf; 2] = [
+        home.join(".bundle").join("cache"),
+        home.join(".gem").join("cache"),
+    ];
+
+    let existing: Vec<&PathBuf> = candidates.iter().filter(|p| p.exists()).collect();
+    if existing.is_empty() {
+        return;
+    }
+
+    logger.info(&format!("\n{}", "Ruby global caches:".cyan()));
+    for p in &existing {
+        logger.info(&format!("  [ruby] {}", p.display()));
+    }
+
+    if dry_run {
+        for p in &existing {
+            logger.detail(&format!("  [ruby] would delete {}", p.display()));
+        }
+        return;
+    }
+
+    if !common::confirm(&logger, "  Delete Ruby global caches?", false) {
+        return;
+    }
+
+    for p in &existing {
+        delete_path_verbose(p, verbose, &logger);
+    }
+}
+
+/// Delete a directory at `path`, prefixing log lines with `[ruby]` or
+/// `[rails]`. Silently skips when the path is missing.
+fn clean_path(path: &Path, tag: &str, dry_run: bool, verbose: bool, logger: &Logger) {
+    if !path.exists() {
+        return;
+    }
+    if dry_run {
+        logger.detail(&format!("  [{}] would delete {}", tag, path.display()));
+        return;
+    }
+    match std::fs::remove_dir_all(path) {
+        Ok(_) => logger.success(&format!(
+            "  [{}] {} Deleted {}",
+            tag,
+            "✓".green(),
+            path.display()
+        )),
+        Err(e) => {
+            logger.err(&format!(
+                "  [{}] {} Failed to delete {}: {}",
+                tag,
+                "✗".red(),
+                path.display(),
+                e
+            ));
+            if verbose {
+                logger.err(&e.to_string());
+            }
+        }
+    }
+}
+
+/// Delete a single file. Same `[ruby]` / `[rails]` log prefix convention.
+fn clean_file(path: &Path, tag: &str, dry_run: bool, verbose: bool, logger: &Logger) {
+    if !path.exists() {
+        return;
+    }
+    if dry_run {
+        logger.detail(&format!("  [{}] would delete {}", tag, path.display()));
+        return;
+    }
+    match std::fs::remove_file(path) {
+        Ok(_) => logger.success(&format!(
+            "  [{}] {} Deleted {}",
+            tag,
+            "✓".green(),
+            path.display()
+        )),
+        Err(e) => {
+            logger.err(&format!(
+                "  [{}] {} Failed to delete {}: {}",
+                tag,
+                "✗".red(),
+                path.display(),
+                e
+            ));
+            if verbose {
+                logger.err(&e.to_string());
+            }
+        }
+    }
+}
