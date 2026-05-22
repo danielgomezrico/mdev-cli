@@ -97,9 +97,6 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         return 0;
     }
 
-    let has_flutter = sorted_projects
-        .iter()
-        .any(|(info, _)| info.project_type == ProjectType::Flutter);
     let has_android = sorted_projects.iter().any(|(info, _)| {
         info.project_type == ProjectType::Android || info.project_type == ProjectType::Flutter
     });
@@ -109,11 +106,17 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
 
     let explicit_flags = args.flutter || args.pub_cache || args.gradle || args.android || args.ios;
 
-    // Determine global targets
+    // Determine global targets — Flutter caches (pub + SDK bin/cache) are offered even when
+    // no Flutter project is detected, because they are global disk hogs.
     let do_pub = if explicit_flags {
-        args.pub_cache
+        args.pub_cache || args.flutter
     } else {
-        has_flutter
+        true
+    };
+    let do_flutter_sdk = if explicit_flags {
+        args.flutter
+    } else {
+        true
     };
     let do_gradle = if explicit_flags {
         args.gradle
@@ -185,6 +188,7 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
                             root.join("build"),
                             root.join("app").join("build"),
                             root.join(".gradle"),
+                            root.join(".dart_tool"),
                         ],
                         args.dry_run,
                         args.verbose,
@@ -217,9 +221,16 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         .map(PathBuf::from)
         .unwrap_or_else(|_| home.join(".gradle"));
 
+    let flutter_sdk_cache = locate_flutter_sdk_cache(runner);
+
     let mut global_paths: Vec<PathBuf> = Vec::new();
     if do_pub {
         global_paths.push(home.join(".pub-cache"));
+    }
+    if do_flutter_sdk {
+        if let Some(p) = &flutter_sdk_cache {
+            global_paths.push(p.clone());
+        }
     }
     if do_gradle {
         global_paths.push(gradle_home.join("caches"));
@@ -274,6 +285,11 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
                     logger.success(&format!("  {} pub cache cleaned", "✓".green()));
                 }
             }
+            if do_flutter_sdk {
+                if let Some(p) = &flutter_sdk_cache {
+                    delete_path_verbose(p, args.verbose, &logger);
+                }
+            }
             if do_gradle {
                 for p in &[
                     gradle_home.join("caches"),
@@ -303,6 +319,26 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
 
     logger.success("\nPurge complete.");
     0
+}
+
+/// Resolve the Flutter SDK's `bin/cache` directory, preferring `$FLUTTER_ROOT`
+/// and falling back to `which flutter` (canonicalizing symlinks so e.g. fvm
+/// shims resolve to the real SDK).
+fn locate_flutter_sdk_cache(runner: &dyn Runner) -> Option<PathBuf> {
+    if let Ok(root) = std::env::var("FLUTTER_ROOT") {
+        let p = PathBuf::from(root).join("bin").join("cache");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let flutter_bin = runner.which("flutter")?;
+    let resolved = std::fs::canonicalize(&flutter_bin).ok()?;
+    let cache = resolved.parent()?.join("cache");
+    if cache.exists() {
+        Some(cache)
+    } else {
+        None
+    }
 }
 
 fn run_flutter_clean(
