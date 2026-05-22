@@ -1,12 +1,24 @@
 use clap::Args;
 use colored::Colorize;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::app_detector::AppDetector;
 use crate::logger::Logger;
 use crate::models::{AppInfo, ProjectType};
 use crate::runner::Runner;
+
+pub mod common;
+pub mod flutter;
+pub mod android;
+pub mod ios;
+pub mod node;
+pub mod rust;
+pub mod go;
+pub mod ruby;
+pub mod python;
+
+use common::delete_path_verbose;
 
 #[derive(Args, Debug)]
 pub struct PurgeArgs {
@@ -140,81 +152,21 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         logger.warn("Dry run — no files will be deleted.");
     }
 
-    // Per-project local cleanup
+    // Per-project local cleanup — dispatched by project type to its module.
     for (info, root) in &sorted_projects {
         let display_root = root.display();
         logger.info(&format!("\n{} {}", "→".cyan(), display_root));
 
         match info.project_type {
-            ProjectType::Flutter => {
-                let do_flutter_clean = !explicit_flags || args.flutter;
-                let do_android_build = !explicit_flags || args.android || args.flutter;
-                let do_ios_pods =
-                    (!explicit_flags || args.ios || args.flutter) && cfg!(target_os = "macos");
-
-                if do_flutter_clean {
-                    run_flutter_clean(root, args.dry_run, args.verbose, runner, &logger);
-                }
-                if do_android_build {
-                    delete_paths(
-                        &[
-                            root.join("android").join("build"),
-                            root.join("android").join("app").join("build"),
-                            root.join("android").join(".gradle"),
-                        ],
-                        args.dry_run,
-                        args.verbose,
-                        &logger,
-                    );
-                }
-                if do_ios_pods {
-                    delete_paths(
-                        &[
-                            root.join("ios").join("Pods"),
-                            root.join("ios").join(".symlinks"),
-                            root.join("ios").join("build"),
-                        ],
-                        args.dry_run,
-                        args.verbose,
-                        &logger,
-                    );
-                }
-            }
-            ProjectType::Android => {
-                let do_android_build = !explicit_flags || args.android;
-                if do_android_build {
-                    delete_paths(
-                        &[
-                            root.join("build"),
-                            root.join("app").join("build"),
-                            root.join(".gradle"),
-                            root.join(".dart_tool"),
-                        ],
-                        args.dry_run,
-                        args.verbose,
-                        &logger,
-                    );
-                }
-            }
-            ProjectType::Ios => {
-                let do_ios_pods = (!explicit_flags || args.ios) && cfg!(target_os = "macos");
-                if do_ios_pods {
-                    delete_paths(
-                        &[
-                            root.join("Pods"),
-                            root.join(".symlinks"),
-                            root.join("build"),
-                        ],
-                        args.dry_run,
-                        args.verbose,
-                        &logger,
-                    );
-                }
-            }
+            ProjectType::Flutter => flutter::run(args, root, args.dry_run, args.verbose),
+            ProjectType::Android => android::run(args, root, args.dry_run, args.verbose),
+            ProjectType::Ios => ios::run(args, root, args.dry_run, args.verbose),
+            ProjectType::Node { .. } => node::run(args, root, args.dry_run, args.verbose),
+            ProjectType::Rust => rust::run(args, root, args.dry_run, args.verbose),
+            ProjectType::Go => go::run(args, root, args.dry_run, args.verbose),
+            ProjectType::Ruby { .. } => ruby::run(args, root, args.dry_run, args.verbose),
+            ProjectType::Python { .. } => python::run(args, root, args.dry_run, args.verbose),
             ProjectType::Unknown => {}
-            // New variants are introduced in B1 but their cleaners are owned by B4..B8.
-            // Keep this as a no-op until those slices land.
-            _ => {}
         }
     }
 
@@ -341,61 +293,5 @@ fn locate_flutter_sdk_cache(runner: &dyn Runner) -> Option<PathBuf> {
         Some(cache)
     } else {
         None
-    }
-}
-
-fn run_flutter_clean(
-    root: &Path,
-    dry_run: bool,
-    verbose: bool,
-    runner: &dyn Runner,
-    logger: &Logger,
-) {
-    let label = format!("flutter clean ({})", root.display());
-    if dry_run {
-        logger.detail(&format!("  {} {}", "~".cyan(), label));
-        return;
-    }
-    let root_str = root.to_string_lossy().into_owned();
-    let result = runner.run("flutter", &["clean"], Some(root_str.as_str()));
-    if result.is_success() {
-        logger.success(&format!("  {} {}", "✓".green(), label));
-    } else {
-        logger.err(&format!("  {} Failed: {}", "✗".red(), label));
-        if verbose {
-            logger.err(&result.stderr);
-        }
-    }
-}
-
-fn delete_paths(paths: &[PathBuf], dry_run: bool, verbose: bool, logger: &Logger) {
-    for p in paths {
-        if p.exists() {
-            if dry_run {
-                logger.detail(&format!("  {} {}", "~".cyan(), p.display()));
-            } else {
-                delete_path_verbose(p, verbose, logger);
-            }
-        }
-    }
-}
-
-fn delete_path_verbose(path: &Path, verbose: bool, logger: &Logger) {
-    if !path.exists() {
-        return;
-    }
-    match std::fs::remove_dir_all(path) {
-        Ok(_) => logger.success(&format!("  {} Deleted {}", "✓".green(), path.display())),
-        Err(e) => {
-            logger.err(&format!(
-                "  {} Failed to delete {}: {}",
-                "✗".red(),
-                path.display(),
-                e
-            ));
-            if verbose {
-                logger.err(&e.to_string());
-            }
-        }
     }
 }
