@@ -28,10 +28,9 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     delete_paths(&targets, dry_run, verbose, &logger);
 }
 
-/// Global Node/frontend cache cleanup. Not yet wired into the dispatcher in
-/// `mod.rs` — a later worker is expected to surface this via a CLI flag.
-/// Prompts before each deletion (skipped when `dry_run`).
-#[allow(dead_code)]
+/// Global Node/frontend cache cleanup. Wired into the dispatcher in `mod.rs`
+/// behind the `--node-global` flag. Prompts before each deletion (skipped
+/// when `dry_run`).
 pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
     let home = dirs::home_dir().unwrap_or_default();

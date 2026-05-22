@@ -42,6 +42,50 @@ pub struct PurgeArgs {
     #[arg(long)]
     pub ios: bool,
 
+    /// Clean Node/frontend projects
+    #[arg(long)]
+    pub node: bool,
+
+    /// Clean Rust/cargo projects
+    #[arg(long)]
+    pub rust: bool,
+
+    /// Clean Go projects
+    #[arg(long)]
+    pub go: bool,
+
+    /// Clean Ruby/Rails projects
+    #[arg(long)]
+    pub ruby: bool,
+
+    /// Clean Python projects
+    #[arg(long)]
+    pub python: bool,
+
+    /// Also clean Node global stores (~/.npm, ~/.pnpm-store, etc.)
+    #[arg(long = "node-global")]
+    pub node_global: bool,
+
+    /// Also clean ~/.cargo/registry caches (destructive)
+    #[arg(long = "rust-global")]
+    pub rust_global: bool,
+
+    /// Also run `go clean -modcache` and delete go-build cache (destructive)
+    #[arg(long = "go-global")]
+    pub go_global: bool,
+
+    /// Also clean ~/.bundle/cache and ~/.gem/cache (destructive)
+    #[arg(long = "ruby-global")]
+    pub ruby_global: bool,
+
+    /// Also clean pip/uv/poetry/pipenv global caches (destructive)
+    #[arg(long = "python-global")]
+    pub python_global: bool,
+
+    /// Also delete .venv/venv/env directories under each Python project (very destructive — opt-in)
+    #[arg(long = "python-venv")]
+    pub python_venv: bool,
+
     /// Dry run — show what would be deleted without deleting
     #[arg(short = 'n', long)]
     pub dry_run: bool,
@@ -116,7 +160,8 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         info.project_type == ProjectType::Ios || info.project_type == ProjectType::Flutter
     });
 
-    let explicit_flags = args.flutter || args.pub_cache || args.gradle || args.android || args.ios;
+    let explicit_flags = args.flutter || args.pub_cache || args.gradle || args.android || args.ios
+        || args.node || args.rust || args.go || args.ruby || args.python;
 
     // Determine global targets — Flutter caches (pub + SDK bin/cache) are offered even when
     // no Flutter project is detected, because they are global disk hogs.
@@ -153,19 +198,53 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
     }
 
     // Per-project local cleanup — dispatched by project type to its module.
+    // When no explicit flags are passed, every detected project type runs.
+    // With explicit flags, only the matching cleaners run.
     for (info, root) in &sorted_projects {
         let display_root = root.display();
         logger.info(&format!("\n{} {}", "→".cyan(), display_root));
 
         match info.project_type {
-            ProjectType::Flutter => flutter::run(args, root, args.dry_run, args.verbose),
-            ProjectType::Android => android::run(args, root, args.dry_run, args.verbose),
-            ProjectType::Ios => ios::run(args, root, args.dry_run, args.verbose),
-            ProjectType::Node { .. } => node::run(args, root, args.dry_run, args.verbose),
-            ProjectType::Rust => rust::run(args, root, args.dry_run, args.verbose),
-            ProjectType::Go => go::run(args, root, args.dry_run, args.verbose),
-            ProjectType::Ruby { .. } => ruby::run(args, root, args.dry_run, args.verbose),
-            ProjectType::Python { .. } => python::run(args, root, args.dry_run, args.verbose),
+            ProjectType::Flutter => {
+                if !explicit_flags || args.flutter || args.android || args.ios {
+                    flutter::run(args, root, args.dry_run, args.verbose);
+                }
+            }
+            ProjectType::Android => {
+                if !explicit_flags || args.android {
+                    android::run(args, root, args.dry_run, args.verbose);
+                }
+            }
+            ProjectType::Ios => {
+                if !explicit_flags || args.ios {
+                    ios::run(args, root, args.dry_run, args.verbose);
+                }
+            }
+            ProjectType::Node { .. } => {
+                if !explicit_flags || args.node {
+                    node::run(args, root, args.dry_run, args.verbose);
+                }
+            }
+            ProjectType::Rust => {
+                if !explicit_flags || args.rust {
+                    rust::run(args, root, args.dry_run, args.verbose);
+                }
+            }
+            ProjectType::Go => {
+                if !explicit_flags || args.go {
+                    go::run(args, root, args.dry_run, args.verbose);
+                }
+            }
+            ProjectType::Ruby { .. } => {
+                if !explicit_flags || args.ruby {
+                    ruby::run(args, root, args.dry_run, args.verbose);
+                }
+            }
+            ProjectType::Python { .. } => {
+                if !explicit_flags || args.python {
+                    python::run(args, root, args.dry_run, args.verbose);
+                }
+            }
             ProjectType::Unknown => {}
         }
     }
@@ -269,6 +348,32 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
             }
         } else if args.dry_run {
             logger.detail("  (dry run — skipped)");
+        }
+    }
+
+    // Opt-in global cleanup for new ecosystems. Each `run_global` handles its
+    // own confirmation prompt (skipped automatically in dry-run mode).
+    if args.node_global {
+        node::run_global(args, args.dry_run, args.verbose);
+    }
+    if args.rust_global {
+        rust::run_global(args, args.dry_run, args.verbose);
+    }
+    if args.go_global {
+        go::run_global(args, args.dry_run, args.verbose);
+    }
+    if args.ruby_global {
+        ruby::run_global(args, args.dry_run, args.verbose);
+    }
+    if args.python_global {
+        python::run_global(args, args.dry_run, args.verbose);
+    }
+    if args.python_venv {
+        // `run_venv` is per-project; loop over detected Python projects.
+        for (info, root) in &sorted_projects {
+            if matches!(info.project_type, ProjectType::Python { .. }) {
+                python::run_venv(args, root, args.dry_run, args.verbose);
+            }
         }
     }
 

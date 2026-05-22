@@ -60,10 +60,9 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     }
 }
 
-/// Global Python caches — not yet wired into dispatch. Will be called when a
-/// future flag (e.g. `--python-globals`) lands. OS-guarded; pip & poetry live
-/// in different caches on macOS vs Linux.
-#[allow(dead_code)]
+/// Global Python caches. Wired into the dispatcher in `mod.rs` behind the
+/// `--python-global` flag. OS-guarded; pip & poetry live in different caches
+/// on macOS vs Linux.
 pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
     let home = dirs::home_dir().unwrap_or_default();
@@ -109,11 +108,10 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     }
 }
 
-/// Per-project venv cleanup — not yet wired into dispatch. When the
-/// `--python-venv` flag is added, this deletes top-level virtualenv
-/// directories. Confirms each one because these are common working-dir
-/// mistakes (devs name folders `env/` for unrelated reasons).
-#[allow(dead_code)]
+/// Per-project venv cleanup. Wired into the dispatcher in `mod.rs` behind
+/// the `--python-venv` flag. Deletes top-level virtualenv directories.
+/// Confirms each one because these are common working-dir mistakes (devs
+/// name folders `env/` for unrelated reasons).
 pub fn run_venv(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
 

@@ -17,10 +17,8 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     }
 }
 
-/// Global Cargo cache cleanup. Prompts the user once before deleting.
-///
-/// Not yet wired from `mod.rs`; B9 will gate this behind a CLI flag.
-#[allow(dead_code)]
+/// Global Cargo cache cleanup. Prompts the user once before deleting. Wired
+/// into the dispatcher in `mod.rs` behind the `--rust-global` flag.
 pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
     let home = dirs::home_dir().unwrap_or_default();

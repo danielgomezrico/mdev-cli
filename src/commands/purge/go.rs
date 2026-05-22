@@ -51,8 +51,8 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
 
 /// Global Go cleanup. Runs `go clean -modcache` (if `go` is available) and
 /// removes the OS-specific go-build cache. All destructive actions are
-/// guarded by `common::confirm`.
-#[allow(dead_code)]
+/// guarded by `common::confirm`. Wired into the dispatcher in `mod.rs`
+/// behind the `--go-global` flag.
 pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
     let runner = ProcessRunner::new();

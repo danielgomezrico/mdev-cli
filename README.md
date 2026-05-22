@@ -21,12 +21,29 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 |---|---|---|
 | `mdev uninstall` | `u` | Uninstall the app from connected devices/emulators |
 | `mdev clear` | `c` | Clear app data and restart on connected devices |
-| `mdev purge` | `p` | Purge build artifacts and caches (flutter, gradle, pub, pods, DerivedData) |
+| `mdev purge` | `p` | Purge build artifacts and caches across Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, and Python projects |
 | `mdev keystore` | `k` | Interactively generate an Android signing keystore |
 | `mdev emulator config` | `e c` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
 | `mdev emulator list` | `e l` | List known AVD config.ini tweaks |
 | `mdev doctor` | `d` | Check development environment (flutter, adb, java, xcode, etc.) |
 | `mdev completions` | `s` | Generate shell completion script |
+
+## Supported ecosystems
+
+`mdev purge` auto-detects projects in the current directory (and one level of subdirs) and applies per-ecosystem cleaners. Global caches are gated behind explicit `--<eco>-global` flags and prompt for confirmation before deletion.
+
+| Ecosystem | Anchor file(s) | Per-project paths | Global (gated) |
+|---|---|---|---|
+| Flutter | `pubspec.yaml` | `build/`, `.dart_tool/`, `android/build`, `ios/Pods`, `ios/Podfile.lock`, `ios/.symlinks`, … | `~/.pub-cache`, `<flutter>/bin/cache` |
+| Android | `app/build.gradle{,.kts}` | `app/build/`, `build/`, `.gradle/` | `~/.gradle/caches` |
+| iOS | `*.xcodeproj` | `Pods/`, `Podfile.lock`, `*.xcworkspace`, `DerivedData` | CocoaPods cache, `~/Library/Developer/Xcode/DerivedData` |
+| Node | `package.json` (+ lockfile) | `node_modules/`, `.next/`, `.nuxt/`, `.turbo/`, `.vite/`, `.parcel-cache/`, `dist/`, `build/`, `.svelte-kit/`, `.astro/`, `coverage/` | `~/.npm`, `~/.pnpm-store`, `~/.cache/yarn` or `~/Library/Caches/Yarn`, `~/.bun/install/cache` |
+| Rust | `Cargo.toml` | `target/` | `~/.cargo/registry/cache`, `~/.cargo/registry/src`, `~/.cargo/git/db` |
+| Go | `go.mod` | `bin/`, `pkg/` | `go clean -modcache`, `~/Library/Caches/go-build` or `~/.cache/go-build` |
+| Ruby / Rails | `Gemfile` (+ `config/application.rb`) | `vendor/bundle/`, `.bundle/`, Rails: `tmp/cache/`, `log/*.log` | `~/.bundle/cache`, `~/.gem/cache` |
+| Python (Django / FastAPI / generic) | `pyproject.toml`, `requirements.txt`, `Pipfile`, `uv.lock`, `poetry.lock`, `manage.py` | `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`, `.coverage`, `htmlcov/`, Django: `staticfiles/`; opt-in: `.venv/`, `venv/`, `env/` | `~/Library/Caches/pip`/`pypoetry` (macOS), `~/.cache/pip`/`pypoetry` (Linux), `~/.cache/uv`, `~/.local/share/virtualenvs` |
+
+Per-project paths are always cleaned for any detected project. Global caches are destructive and only fire when you pass the matching `--<eco>-global` flag, with an interactive confirmation prompt before any deletion (skipped in `--dry-run`).
 
 ## Installation
 
@@ -67,6 +84,9 @@ mdev purge
 
 # Purge only specific targets
 mdev purge --flutter --gradle
+mdev purge --rust --dry-run                # only Rust projects
+mdev purge --node --node-global            # Node projects + global stores
+mdev purge --python --python-venv          # Python + remove .venv/venv/env
 
 # Generate a release keystore
 mdev keystore

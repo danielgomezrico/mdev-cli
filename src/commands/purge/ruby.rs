@@ -52,8 +52,8 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     }
 }
 
-/// Globals for Ruby — gated by `common::confirm`. Not wired into dispatch yet.
-#[allow(dead_code)]
+/// Globals for Ruby — gated by `common::confirm`. Wired into the dispatcher
+/// in `mod.rs` behind the `--ruby-global` flag.
 pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
     let home = dirs::home_dir().unwrap_or_default();

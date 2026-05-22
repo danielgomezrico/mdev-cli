@@ -17,7 +17,7 @@ const VERSION: &str = "1.0.0";
 #[derive(Parser)]
 #[command(
     name = "mdev",
-    about = "Flutter/Android/iOS developer CLI helper.\nRun from within your project directory."
+    about = "mdev — caches and lifecycle for Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, and Python projects.\nRun from within your project directory."
 )]
 struct Cli {
     /// Print the mdev version.
