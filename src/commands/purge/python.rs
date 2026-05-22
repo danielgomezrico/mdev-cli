@@ -253,15 +253,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn args() -> PurgeArgs {
-        PurgeArgs {
-            flutter: false,
-            pub_cache: false,
-            gradle: false,
-            android: false,
-            ios: false,
-            dry_run: true,
-            verbose: false,
-        }
+        PurgeArgs { dry_run: true, ..Default::default() }
     }
 
     #[test]

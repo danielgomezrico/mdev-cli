@@ -20,7 +20,7 @@ pub mod python;
 
 use common::delete_path_verbose;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct PurgeArgs {
     /// Clean Flutter projects
     #[arg(long)]
