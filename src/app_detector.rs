@@ -390,3 +390,205 @@ fn parse_bundle_id_from_pbxproj(content: &str) -> Option<String> {
 
     release_value.or(fallback_value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Marker descriptor: relative path + optional file contents. A trailing
+    /// `/` in `path` means "create as directory"; everything else is a file.
+    struct Marker {
+        path: &'static str,
+        contents: &'static str,
+    }
+
+    impl Marker {
+        const fn file(path: &'static str) -> Self {
+            Self {
+                path,
+                contents: "",
+            }
+        }
+        const fn file_with(path: &'static str, contents: &'static str) -> Self {
+            Self { path, contents }
+        }
+        const fn dir(path: &'static str) -> Self {
+            // `path` must end with '/'.
+            Self {
+                path,
+                contents: "",
+            }
+        }
+    }
+
+    fn seed(tmp: &TempDir, markers: &[Marker]) {
+        for m in markers {
+            let p = tmp.path().join(m.path.trim_end_matches('/'));
+            if m.path.ends_with('/') {
+                fs::create_dir_all(&p).unwrap();
+            } else {
+                if let Some(parent) = p.parent() {
+                    fs::create_dir_all(parent).unwrap();
+                }
+                fs::write(&p, m.contents).unwrap();
+            }
+        }
+    }
+
+    fn case(markers: &[Marker], expected: ProjectType) {
+        let tmp = TempDir::new().unwrap();
+        seed(&tmp, markers);
+        let got = classify_dir(tmp.path());
+        assert_eq!(
+            got, expected,
+            "classify_dir mismatch for markers {:?}",
+            markers.iter().map(|m| m.path).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn flutter_pubspec() {
+        case(&[Marker::file("pubspec.yaml")], ProjectType::Flutter);
+    }
+
+    #[test]
+    fn android_app_build_gradle_kts() {
+        case(
+            &[Marker::file("app/build.gradle.kts")],
+            ProjectType::Android,
+        );
+    }
+
+    #[test]
+    fn ios_xcodeproj_dir() {
+        case(&[Marker::dir("Foo.xcodeproj/")], ProjectType::Ios);
+    }
+
+    #[test]
+    fn node_pnpm() {
+        case(
+            &[
+                Marker::file("package.json"),
+                Marker::file("pnpm-lock.yaml"),
+            ],
+            ProjectType::Node {
+                manager: NodePm::Pnpm,
+            },
+        );
+    }
+
+    #[test]
+    fn node_yarn() {
+        case(
+            &[Marker::file("package.json"), Marker::file("yarn.lock")],
+            ProjectType::Node {
+                manager: NodePm::Yarn,
+            },
+        );
+    }
+
+    #[test]
+    fn node_bun() {
+        case(
+            &[Marker::file("package.json"), Marker::file("bun.lockb")],
+            ProjectType::Node {
+                manager: NodePm::Bun,
+            },
+        );
+    }
+
+    #[test]
+    fn node_npm_with_lock() {
+        case(
+            &[
+                Marker::file("package.json"),
+                Marker::file("package-lock.json"),
+            ],
+            ProjectType::Node {
+                manager: NodePm::Npm,
+            },
+        );
+    }
+
+    #[test]
+    fn node_npm_alone() {
+        case(
+            &[Marker::file("package.json")],
+            ProjectType::Node {
+                manager: NodePm::Npm,
+            },
+        );
+    }
+
+    #[test]
+    fn rust_cargo_toml() {
+        case(&[Marker::file("Cargo.toml")], ProjectType::Rust);
+    }
+
+    #[test]
+    fn go_mod() {
+        case(&[Marker::file("go.mod")], ProjectType::Go);
+    }
+
+    #[test]
+    fn ruby_gemfile_only() {
+        case(&[Marker::file("Gemfile")], ProjectType::Ruby { rails: false });
+    }
+
+    #[test]
+    fn ruby_rails() {
+        case(
+            &[
+                Marker::file("Gemfile"),
+                Marker::file("config/application.rb"),
+            ],
+            ProjectType::Ruby { rails: true },
+        );
+    }
+
+    #[test]
+    fn python_pyproject_generic() {
+        case(
+            &[Marker::file_with(
+                "pyproject.toml",
+                "[project]\nname = \"x\"\n",
+            )],
+            ProjectType::Python {
+                framework: Some(PyFw::Generic),
+            },
+        );
+    }
+
+    #[test]
+    fn python_pyproject_fastapi() {
+        case(
+            &[Marker::file_with(
+                "pyproject.toml",
+                "[project]\nname = \"x\"\ndependencies = [\"fastapi\"]\n",
+            )],
+            ProjectType::Python {
+                framework: Some(PyFw::FastAPI),
+            },
+        );
+    }
+
+    #[test]
+    fn python_django() {
+        case(
+            &[
+                Marker::file("manage.py"),
+                Marker::file_with("pyproject.toml", "[project]\nname = \"x\"\n"),
+            ],
+            ProjectType::Python {
+                framework: Some(PyFw::Django),
+            },
+        );
+    }
+
+    #[test]
+    fn empty_dir_is_unknown() {
+        case(&[], ProjectType::Unknown);
+    }
+}

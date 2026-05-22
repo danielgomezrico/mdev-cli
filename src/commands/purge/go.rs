@@ -129,3 +129,39 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn args() -> PurgeArgs {
+        PurgeArgs {
+            flutter: false,
+            pub_cache: false,
+            gradle: false,
+            android: false,
+            ios: false,
+            dry_run: true,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn dry_run_does_not_delete_bin_or_pkg() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Safety belt requires go.mod to be present.
+        fs::write(root.join("go.mod"), "module example.test\n").unwrap();
+        let bin = root.join("bin");
+        let pkg = root.join("pkg");
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&pkg).unwrap();
+
+        run(&args(), root, true, false);
+
+        assert!(bin.exists(), "dry-run must not delete bin/");
+        assert!(pkg.exists(), "dry-run must not delete pkg/");
+    }
+}

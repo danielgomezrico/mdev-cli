@@ -245,3 +245,43 @@ fn delete_file_or_dir(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn args() -> PurgeArgs {
+        PurgeArgs {
+            flutter: false,
+            pub_cache: false,
+            gradle: false,
+            android: false,
+            ios: false,
+            dry_run: true,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn dry_run_does_not_delete_python_caches() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pycache = root.join("__pycache__");
+        let pytest = root.join(".pytest_cache");
+        let coverage = root.join(".coverage");
+        let htmlcov = root.join("htmlcov");
+        fs::create_dir_all(&pycache).unwrap();
+        fs::create_dir_all(&pytest).unwrap();
+        fs::write(&coverage, b"").unwrap();
+        fs::create_dir_all(&htmlcov).unwrap();
+
+        run(&args(), root, true, false);
+
+        assert!(pycache.exists(), "dry-run must not delete __pycache__/");
+        assert!(pytest.exists(), "dry-run must not delete .pytest_cache/");
+        assert!(coverage.exists(), "dry-run must not delete .coverage");
+        assert!(htmlcov.exists(), "dry-run must not delete htmlcov/");
+    }
+}

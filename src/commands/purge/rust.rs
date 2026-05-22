@@ -69,3 +69,41 @@ fn delete(path: &Path, dry_run: bool, verbose: bool, logger: &Logger) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn args() -> PurgeArgs {
+        PurgeArgs {
+            flutter: false,
+            pub_cache: false,
+            gradle: false,
+            android: false,
+            ios: false,
+            dry_run: true,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn dry_run_does_not_delete_target() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let target = root.join("target");
+        fs::create_dir_all(target.join("debug")).unwrap();
+        // also drop a sentinel file inside.
+        let sentinel = target.join("debug").join("placeholder");
+        fs::write(&sentinel, b"x").unwrap();
+
+        run(&args(), root, true, false);
+
+        assert!(target.exists(), "dry-run must not delete target/");
+        assert!(
+            sentinel.exists(),
+            "dry-run must leave files inside target/ untouched"
+        );
+    }
+}

@@ -151,3 +151,67 @@ fn clean_file(path: &Path, tag: &str, dry_run: bool, verbose: bool, logger: &Log
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn args() -> PurgeArgs {
+        PurgeArgs {
+            flutter: false,
+            pub_cache: false,
+            gradle: false,
+            android: false,
+            ios: false,
+            dry_run: true,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn dry_run_does_not_delete_ruby_targets() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let vendor_bundle = root.join("vendor").join("bundle");
+        let dot_bundle = root.join(".bundle");
+        fs::create_dir_all(&vendor_bundle).unwrap();
+        fs::create_dir_all(&dot_bundle).unwrap();
+
+        run(&args(), root, true, false);
+
+        assert!(
+            vendor_bundle.exists(),
+            "dry-run must not delete vendor/bundle/"
+        );
+        assert!(dot_bundle.exists(), "dry-run must not delete .bundle/");
+    }
+
+    #[test]
+    fn dry_run_rails_branch_preserves_tmp_cache_and_log() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // Mark as Rails.
+        fs::create_dir_all(root.join("config")).unwrap();
+        fs::write(root.join("config").join("application.rb"), b"# rails\n").unwrap();
+        // Common Ruby + Rails targets.
+        let vendor_bundle = root.join("vendor").join("bundle");
+        let tmp_cache = root.join("tmp").join("cache");
+        let log_dir = root.join("log");
+        let log_file = log_dir.join("development.log");
+        fs::create_dir_all(&vendor_bundle).unwrap();
+        fs::create_dir_all(&tmp_cache).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
+        fs::write(&log_file, b"line\n").unwrap();
+
+        run(&args(), root, true, false);
+
+        assert!(tmp_cache.exists(), "dry-run must not delete tmp/cache/");
+        assert!(log_file.exists(), "dry-run must not delete log/*.log");
+        assert!(
+            vendor_bundle.exists(),
+            "dry-run must not delete vendor/bundle/"
+        );
+    }
+}

@@ -61,3 +61,42 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn args() -> PurgeArgs {
+        PurgeArgs {
+            flutter: false,
+            pub_cache: false,
+            gradle: false,
+            android: false,
+            ios: false,
+            dry_run: true,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn dry_run_does_not_delete_node_targets() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let targets = [
+            root.join("node_modules"),
+            root.join("dist"),
+            root.join(".next"),
+        ];
+        for p in &targets {
+            fs::create_dir_all(p).unwrap();
+        }
+
+        run(&args(), root, true, false);
+
+        for p in &targets {
+            assert!(p.exists(), "dry-run must not delete {}", p.display());
+        }
+    }
+}
