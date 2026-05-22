@@ -99,7 +99,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         return;
     }
 
-    if !common::confirm("  Delete Go global caches?", false) {
+    if !common::confirm(&logger, "  Delete Go global caches?", false) {
         logger.detail("[go] skipped");
         return;
     }

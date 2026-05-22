@@ -47,7 +47,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         return;
     }
 
-    if !common::confirm("Delete global Rust/Cargo caches?", false) {
+    if !common::confirm(&logger, "Delete global Rust/Cargo caches?", false) {
         return;
     }
 
