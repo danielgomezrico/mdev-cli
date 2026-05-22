@@ -212,6 +212,9 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
                 }
             }
             ProjectType::Unknown => {}
+            // New variants are introduced in B1 but their cleaners are owned by B4..B8.
+            // Keep this as a no-op until those slices land.
+            _ => {}
         }
     }
 

@@ -1,10 +1,68 @@
+/// Node.js package manager variant.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodePm {
+    Npm,
+    Pnpm,
+    Yarn,
+    Bun,
+}
+
+/// Python framework variant.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PyFw {
+    Django,
+    FastAPI,
+    Generic,
+}
+
 /// Project type detected from the working directory.
-#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectType {
     Flutter,
     Android,
     Ios,
+    Node { manager: NodePm },
+    Rust,
+    Go,
+    Ruby { rails: bool },
+    Python { framework: Option<PyFw> },
     Unknown,
+}
+
+impl ProjectType {
+    /// Returns true for mobile project types (Flutter, Android, iOS).
+    #[allow(dead_code)]
+    pub fn is_mobile(&self) -> bool {
+        matches!(self, ProjectType::Flutter | ProjectType::Android | ProjectType::Ios)
+    }
+
+    /// Returns true only for iOS (which requires macOS to clean).
+    #[allow(dead_code)]
+    pub fn needs_macos(&self) -> bool {
+        matches!(self, ProjectType::Ios)
+    }
+
+    /// Stable, lowercase label per variant.
+    #[allow(dead_code)]
+    pub fn name(&self) -> &'static str {
+        match self {
+            ProjectType::Flutter => "flutter",
+            ProjectType::Android => "android",
+            ProjectType::Ios => "ios",
+            ProjectType::Node { .. } => "node",
+            ProjectType::Rust => "rust",
+            ProjectType::Go => "go",
+            ProjectType::Ruby { rails: true } => "rails",
+            ProjectType::Ruby { rails: false } => "ruby",
+            ProjectType::Python { framework: Some(PyFw::Django) } => "django",
+            ProjectType::Python { framework: Some(PyFw::FastAPI) } => "fastapi",
+            ProjectType::Python { .. } => "python",
+            ProjectType::Unknown => "unknown",
+        }
+    }
 }
 
 /// Information about the current app project.
@@ -33,12 +91,43 @@ impl AppInfo {
     }
 }
 
+/// Human-readable label for a `ProjectType`.
+fn project_type_label(pt: &ProjectType) -> String {
+    match pt {
+        ProjectType::Flutter => "Flutter".to_string(),
+        ProjectType::Android => "Android".to_string(),
+        ProjectType::Ios => "iOS".to_string(),
+        ProjectType::Node { manager } => {
+            let pm = match manager {
+                NodePm::Npm => "npm",
+                NodePm::Pnpm => "pnpm",
+                NodePm::Yarn => "yarn",
+                NodePm::Bun => "bun",
+            };
+            format!("Node ({pm})")
+        }
+        ProjectType::Rust => "Rust".to_string(),
+        ProjectType::Go => "Go".to_string(),
+        ProjectType::Ruby { rails: true } => "Ruby on Rails".to_string(),
+        ProjectType::Ruby { rails: false } => "Ruby".to_string(),
+        ProjectType::Python { framework } => match framework {
+            Some(PyFw::Django) => "Python (Django)".to_string(),
+            Some(PyFw::FastAPI) => "Python (FastAPI)".to_string(),
+            Some(PyFw::Generic) | None => "Python".to_string(),
+        },
+        ProjectType::Unknown => "Unknown".to_string(),
+    }
+}
+
 impl std::fmt::Display for AppInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "AppInfo(type: {:?}, android: {:?}, ios: {:?}, name: {})",
-            self.project_type, self.android_package_id, self.ios_bundle_id, self.flutter_name
+            "AppInfo(type: {}, android: {:?}, ios: {:?}, name: {})",
+            project_type_label(&self.project_type),
+            self.android_package_id,
+            self.ios_bundle_id,
+            self.flutter_name
         )
     }
 }
