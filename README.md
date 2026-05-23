@@ -1,6 +1,6 @@
 # mdev
 
-Rust CLI toolkit for Flutter/Android/iOS developers. Auto-detects your project and runs common dev tasks from within your project directory.
+Rust CLI toolkit for Flutter/Android/iOS developers, with a tech-agnostic `purge` that also cleans Node, Rust, Go, Ruby/Rails, and Python build caches. Auto-detects your project and runs common dev tasks from within your project directory.
 
 ## Why this?
 
@@ -11,7 +11,7 @@ Rust CLI toolkit for Flutter/Android/iOS developers. Auto-detects your project a
 - **`adb logcat` drowns you in noise from every app and system service** — the default stream is thousands of lines per second and filtering it down to just your app requires juggling `--pid`, tag filters, and `grep` ([ref](https://medium.com/@begunova/mastering-adb-logcat-options-filters-advanced-debugging-techniques-10331a73532f)).
 - **Every action needs the package name first** — `adb shell pm clear`, `adb uninstall`, `pm grant` all take a package id, so you end up running `pm list packages | grep myapp` before the real command ([ref](https://www.repeato.app/how-to-delete-an-app-using-adb-without-knowing-its-package-name/)).
 - **"unauthorized" / "offline" dance** — device drops off the bridge and you're back to `adb kill-server`, revoking USB debugging keys, replugging, and re-accepting the fingerprint prompt ([ref](https://www.repeato.app/troubleshooting-adb-device-unauthorized-issue/)).
-- **Corrupted Gradle / pub / CocoaPods caches send you hunting across Stack Overflow** — a weird build failure and suddenly you need to remember the right incantation: `~/.gradle/caches`, `flutter clean && flutter pub cache repair`, `pod deintegrate`, `rm -rf ~/Library/Developer/Xcode/DerivedData`, `pod cache clean --all`… different path, different flag, same wasted afternoon. `mdev purge` knows all of them and supports `--dry-run` so you can see what's about to go.
+- **Corrupted build caches send you hunting across Stack Overflow** — a weird build failure and suddenly you need to remember the right incantation: `~/.gradle/caches`, `flutter clean && flutter pub cache repair`, `pod deintegrate`, `rm -rf ~/Library/Developer/Xcode/DerivedData`, `pod cache clean --all`, `rm -rf node_modules`, `cargo clean`, `go clean -modcache`, `find . -name __pycache__ -exec rm -rf {} +`… different path, different flag, same wasted afternoon. `mdev purge` knows all of them across Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, and Python, and supports `--dry-run` so you can see what's about to go.
 
 ## Commands
 
@@ -66,7 +66,7 @@ make install
 
 ## Usage
 
-Run any command from within your Flutter/Android/iOS project directory.
+Run any command from within your project directory. `uninstall`, `clear`, `keystore`, `emulator`, and `doctor` target Flutter/Android/iOS; `purge` works across every supported ecosystem (see the table above).
 
 ```sh
 # Uninstall from a specific device
