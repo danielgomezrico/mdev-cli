@@ -17,6 +17,7 @@ pub mod rust;
 pub mod go;
 pub mod ruby;
 pub mod python;
+pub mod extras;
 
 use common::delete_path_verbose;
 
@@ -86,6 +87,10 @@ pub struct PurgeArgs {
     #[arg(long = "python-venv")]
     pub python_venv: bool,
 
+    /// Skip the cross-platform "extras" scan (JVM heap dumps, crash logs, editor backups, .DS_Store, etc.)
+    #[arg(long = "no-extras")]
+    pub no_extras: bool,
+
     /// Dry run — show what would be deleted without deleting
     #[arg(short = 'n', long)]
     pub dry_run: bool,
@@ -149,7 +154,10 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
     sorted_projects.sort_by(|a, b| a.1.cmp(&b.1));
 
     if sorted_projects.is_empty() {
-        logger.warn("No Flutter/Android/iOS projects found.");
+        logger.warn("No recognized projects found in current directory.");
+        if !args.no_extras {
+            extras::run(args, &current_dir, args.dry_run, args.verbose);
+        }
         return 0;
     }
 
@@ -246,6 +254,9 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
                 }
             }
             ProjectType::Unknown => {}
+        }
+        if !args.no_extras {
+            extras::run(args, root, args.dry_run, args.verbose);
         }
     }
 

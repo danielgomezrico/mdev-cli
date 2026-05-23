@@ -45,6 +45,21 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 
 Per-project paths are always cleaned for any detected project. Global caches are destructive and only fire when you pass the matching `--<eco>-global` flag, with an interactive confirmation prompt before any deletion (skipped in `--dry-run`).
 
+### Extras (cross-platform junk)
+
+For every detected project (and the current directory when nothing is detected), `mdev purge` also scans for size-hungry files that aren't tied to any specific ecosystem and that tend to pile up unnoticed:
+
+- JVM heap dumps: `java_pid<NNN>.hprof`
+- JVM crash logs: `hs_err_pid<NNN>.log`
+- Core dumps: `core`, `core.<pid>`, `*.dmp`
+- Package-manager debug logs: `npm-debug.log*`, `yarn-debug.log*`, `yarn-error.log*`, `lerna-debug.log*`
+- Editor backups: `*~`, `.*.swp`, `.*.swo`, `.*.swn`
+- OS metadata: `.DS_Store`, `Thumbs.db`
+- Linter caches: `.eslintcache`, `.stylelintcache`
+- Coverage / misc: `.nyc_output/`, `nohup.out`
+
+The scanner lists each match with its size and a total, then prompts once before deleting. Subtrees owned by other cleaners (`node_modules/`, `target/`, `.venv/`, `.git/`, `build/`, …) are skipped to avoid double-walking. Pass `--no-extras` to disable this scan.
+
 ## Installation
 
 ### Homebrew
