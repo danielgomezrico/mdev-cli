@@ -34,7 +34,7 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 
 | Ecosystem | Anchor file(s) | Per-project paths | Global (gated) |
 |---|---|---|---|
-| Flutter | `pubspec.yaml` | `build/`, `.dart_tool/`, `android/build`, `ios/Pods`, `ios/Podfile.lock`, `ios/.symlinks`, … | `~/.pub-cache`, `<flutter>/bin/cache` |
+| Flutter | `pubspec.yaml` | `build/`, `.dart_tool/`, `android/build`, `ios/Pods`, `ios/Podfile.lock`, `ios/.symlinks`, … | `~/.pub-cache`, `<flutter>/bin/cache` for the active SDK **and** every FVM/asdf version (`~/fvm/versions/*/bin/cache`, `$FVM_CACHE_PATH/versions/*/bin/cache`, `~/.asdf/installs/flutter/*/bin/cache`) |
 | Android | `app/build.gradle{,.kts}` | `app/build/`, `build/`, `.gradle/` | `~/.gradle/caches` |
 | iOS | `*.xcodeproj` | `Pods/`, `Podfile.lock`, `*.xcworkspace`, `DerivedData` | CocoaPods cache, `~/Library/Developer/Xcode/DerivedData` |
 | Node | `package.json` (+ lockfile) | `node_modules/`, `.next/`, `.nuxt/`, `.turbo/`, `.vite/`, `.parcel-cache/`, `dist/`, `build/`, `.svelte-kit/`, `.astro/`, `coverage/` | `~/.npm`, `~/.pnpm-store`, `~/.cache/yarn` or `~/Library/Caches/Yarn`, `~/.bun/install/cache` |

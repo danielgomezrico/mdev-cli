@@ -266,16 +266,14 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         .map(PathBuf::from)
         .unwrap_or_else(|_| home.join(".gradle"));
 
-    let flutter_sdk_cache = locate_flutter_sdk_cache(runner);
+    let flutter_sdk_caches = locate_flutter_sdk_caches(runner);
 
     let mut global_paths: Vec<PathBuf> = Vec::new();
     if do_pub {
         global_paths.push(home.join(".pub-cache"));
     }
     if do_flutter_sdk {
-        if let Some(p) = &flutter_sdk_cache {
-            global_paths.push(p.clone());
-        }
+        global_paths.extend(flutter_sdk_caches.iter().cloned());
     }
     if do_gradle {
         global_paths.push(gradle_home.join("caches"));
@@ -331,7 +329,7 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
                 }
             }
             if do_flutter_sdk {
-                if let Some(p) = &flutter_sdk_cache {
+                for p in &flutter_sdk_caches {
                     delete_path_verbose(p, args.verbose, &logger);
                 }
             }
@@ -392,10 +390,59 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
     0
 }
 
-/// Resolve the Flutter SDK's `bin/cache` directory, preferring `$FLUTTER_ROOT`
-/// and falling back to `which flutter` (canonicalizing symlinks so e.g. fvm
-/// shims resolve to the real SDK).
-fn locate_flutter_sdk_cache(runner: &dyn Runner) -> Option<PathBuf> {
+/// Resolve every Flutter SDK `bin/cache` directory worth cleaning:
+///   - the currently-active SDK (via `$FLUTTER_ROOT` or `which flutter`)
+///   - every FVM-managed version under `$FVM_CACHE_PATH/versions/*`,
+///     `~/fvm/versions/*`, and `~/.fvm/versions/*`
+///   - asdf/mise-managed versions under `~/.asdf/installs/flutter/*`
+///
+/// Returns deduplicated (canonical) paths so a symlinked active SDK doesn't
+/// get listed twice.
+fn locate_flutter_sdk_caches(runner: &dyn Runner) -> Vec<PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut version_roots: Vec<PathBuf> = Vec::new();
+    if let Ok(custom) = std::env::var("FVM_CACHE_PATH") {
+        version_roots.push(PathBuf::from(custom).join("versions"));
+    }
+    version_roots.push(home.join("fvm").join("versions"));
+    version_roots.push(home.join(".fvm").join("versions"));
+    version_roots.push(home.join(".asdf").join("installs").join("flutter"));
+
+    collect_flutter_sdk_caches(active_flutter_sdk_cache(runner), &version_roots)
+}
+
+/// Pure helper: combine an optional active SDK cache with every
+/// `<version_root>/<version>/bin/cache` that exists, deduped by canonical
+/// path. Extracted so tests can inject synthetic roots.
+fn collect_flutter_sdk_caches(
+    active: Option<PathBuf>,
+    version_roots: &[PathBuf],
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    if let Some(p) = active {
+        out.push(p);
+    }
+    for root in version_roots {
+        let entries = match std::fs::read_dir(root) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let cache = entry.path().join("bin").join("cache");
+            if cache.exists() {
+                out.push(cache);
+            }
+        }
+    }
+    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    out.retain(|p| {
+        let key = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
+        seen.insert(key)
+    });
+    out
+}
+
+fn active_flutter_sdk_cache(runner: &dyn Runner) -> Option<PathBuf> {
     if let Ok(root) = std::env::var("FLUTTER_ROOT") {
         let p = PathBuf::from(root).join("bin").join("cache");
         if p.exists() {
@@ -409,5 +456,46 @@ fn locate_flutter_sdk_cache(runner: &dyn Runner) -> Option<PathBuf> {
         Some(cache)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn collects_every_fvm_version_and_dedupes_active() {
+        let tmp = TempDir::new().unwrap();
+        let versions_root = tmp.path().join("versions");
+        for v in &["3.41.5", "3.41.6", "3.44.0"] {
+            let cache = versions_root.join(v).join("bin").join("cache");
+            std::fs::create_dir_all(&cache).unwrap();
+        }
+        // Active SDK points at the same physical path as one of the versions —
+        // dedupe should drop the duplicate.
+        let active = Some(versions_root.join("3.44.0").join("bin").join("cache"));
+
+        let caches = collect_flutter_sdk_caches(active, &[versions_root.clone()]);
+
+        assert_eq!(caches.len(), 3);
+        let names: Vec<String> = caches
+            .iter()
+            .filter_map(|p| {
+                p.parent()
+                    .and_then(|b| b.parent())
+                    .and_then(|v| v.file_name())
+                    .and_then(|n| n.to_str().map(String::from))
+            })
+            .collect();
+        assert!(names.contains(&"3.41.5".to_string()));
+        assert!(names.contains(&"3.41.6".to_string()));
+        assert!(names.contains(&"3.44.0".to_string()));
+    }
+
+    #[test]
+    fn missing_version_root_is_ignored() {
+        let caches = collect_flutter_sdk_caches(None, &[PathBuf::from("/nonexistent/path")]);
+        assert!(caches.is_empty());
     }
 }
