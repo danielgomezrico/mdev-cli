@@ -60,6 +60,10 @@ For every detected project (and the current directory when nothing is detected),
 
 The scanner lists each match with its size and a total, then prompts once before deleting. Subtrees owned by other cleaners (`node_modules/`, `target/`, `.venv/`, `.git/`, `build/`, …) are skipped to avoid double-walking. Pass `--no-extras` to disable this scan.
 
+### Git worktrees
+
+When `git` is on your `PATH`, `mdev purge` also lists the **linked** git worktrees of every detected repo and offers to remove them — each via `git worktree remove --force`, which deletes both the worktree's admin files and its working directory. The repo's main working tree and any **locked** worktree are always skipped. It prompts `Delete N linked worktree(s)?` defaulting to **No**, and in `--dry-run` it only lists what it would remove. If `git` is unavailable, this step is a no-op.
+
 ## Installation
 
 ### Homebrew

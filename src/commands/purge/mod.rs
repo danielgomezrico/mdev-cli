@@ -18,6 +18,7 @@ pub mod go;
 pub mod ruby;
 pub mod python;
 pub mod extras;
+pub mod worktrees;
 
 use common::delete_path_verbose;
 
@@ -258,6 +259,10 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         if !args.no_extras {
             extras::run(args, root, args.dry_run, args.verbose);
         }
+        // Git worktrees are a VCS concept, not tied to project type — offer to
+        // remove linked worktrees of every detected repo. Self-gated on git
+        // availability and a default-No prompt.
+        worktrees::run(args, root, runner, args.dry_run, args.verbose);
     }
 
     // Global caches
