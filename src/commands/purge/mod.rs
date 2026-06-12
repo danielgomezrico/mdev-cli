@@ -116,20 +116,10 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         }
     }
 
-    // Direct subdirs
-    if let Ok(entries) = std::fs::read_dir(&current_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let (sub_info, sub_root_opt) = AppDetector::new().detect_with_root(&path);
-                if sub_info.project_type != ProjectType::Unknown {
-                    if let Some(sub_root) = sub_root_opt {
-                        let key = sub_root.to_string_lossy().to_string();
-                        projects.entry(key).or_insert((sub_info, sub_root));
-                    }
-                }
-            }
-        }
+    // Nested projects (recursive, bounded depth)
+    for (sub_info, sub_root) in AppDetector::new().discover_projects(&current_dir) {
+        let key = sub_root.to_string_lossy().to_string();
+        projects.entry(key).or_insert((sub_info, sub_root));
     }
 
     // Remove sub-paths: if path A starts with path B + separator and B != A, remove A

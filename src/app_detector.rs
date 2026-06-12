@@ -10,6 +10,10 @@ use regex::Regex;
 use crate::models::{AppInfo, NodePm, ProjectType, PyFw};
 
 const MAX_LEVELS: usize = 10;
+/// Maximum directory depth descended when recursively discovering projects
+/// under a starting directory (e.g. a workspace folder holding many repos at
+/// `~/projects/<group>/<repo>`).
+const MAX_DISCOVERY_DEPTH: usize = 6;
 /// Maximum bytes to scan when looking for the FastAPI substring in
 /// requirement / project files. 64 KiB is plenty for `pyproject.toml`
 /// and `requirements.txt` while bounding cost.
@@ -37,6 +41,19 @@ fn manifest_package_pattern() -> &'static Regex {
 fn bundle_id_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"PRODUCT_BUNDLE_IDENTIFIER\s*=\s*([^;]+);").unwrap())
+}
+
+// Indirect Kotlin DSL: applicationId = APPLICATION_ID  (unquoted identifier,
+// typically a constant defined in a convention plugin).
+fn application_id_ref_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"applicationId\s*=\s*([A-Za-z_][A-Za-z0-9_]*)").unwrap())
+}
+
+// AGP namespace literal: namespace = "com.example.app"  (Kotlin or Groovy).
+fn namespace_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"namespace\s*=?\s*["']([^"']+)["']"#).unwrap())
 }
 
 pub struct AppDetector;
@@ -90,6 +107,71 @@ impl AppDetector {
             AppInfo::new(String::new(), ProjectType::Unknown, None, None),
             None,
         )
+    }
+
+    /// Recursively discover every project rooted at or below `start_dir`.
+    ///
+    /// Where [`Self::detect_with_root`] walks *up* to find the single project
+    /// that owns `start_dir`, this walks *down*: it classifies `start_dir` and
+    /// each descendant, records the first project root found on every branch,
+    /// and stops descending once a project is found (its internals belong to
+    /// that project). Bounded by [`MAX_DISCOVERY_DEPTH`]; skips
+    /// dependency/build/VCS directories. Results are sorted by path.
+    pub fn discover_projects(&self, start_dir: &Path) -> Vec<(AppInfo, PathBuf)> {
+        let mut found: Vec<(AppInfo, PathBuf)> = Vec::new();
+        discover_recursive(start_dir, 0, &mut found);
+        found.sort_by(|a, b| a.1.cmp(&b.1));
+        found
+    }
+}
+
+/// Directory names never descended into during recursive project discovery:
+/// dependency/build/VCS dirs that never host a sibling project we care about
+/// and only inflate the walk cost.
+fn is_discovery_skip_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "node_modules"
+            | "target"
+            | "build"
+            | "Pods"
+            | ".dart_tool"
+            | "DerivedData"
+            | "vendor"
+            | "__pycache__"
+            | ".venv"
+            | "venv"
+            | "env"
+            | ".tox"
+            | ".next"
+            | ".nuxt"
+            | ".turbo"
+    )
+}
+
+fn discover_recursive(dir: &Path, depth: usize, out: &mut Vec<(AppInfo, PathBuf)>) {
+    let pt = classify_dir(dir);
+    if pt != ProjectType::Unknown {
+        out.push((build_app_info(dir, &pt), dir.to_path_buf()));
+        return;
+    }
+    if depth >= MAX_DISCOVERY_DEPTH {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Hidden dirs (`.git`, `.gradle`, …) never hold projects we target.
+        if name.starts_with('.') || is_discovery_skip_dir(name) {
+            continue;
+        }
+        discover_recursive(&path, depth + 1, out);
     }
 }
 
@@ -179,19 +261,21 @@ fn classify_dir(dir: &Path) -> ProjectType {
     if dir.join("go.mod").exists() {
         return ProjectType::Go;
     }
-    // 9. Ruby (non-Rails) — Gemfile only
-    if has_gemfile {
-        return ProjectType::Ruby { rails: false };
-    }
-    // 10. Android (app/build.gradle{,.kts})
+    // 9. Android (app/build.gradle{,.kts}) — a strong native anchor must beat
+    //    the bare-Gemfile Ruby fallback below, since native projects commonly
+    //    carry a fastlane Gemfile at their root.
     if dir.join("app").join("build.gradle.kts").exists()
         || dir.join("app").join("build.gradle").exists()
     {
         return ProjectType::Android;
     }
-    // 11. iOS (*.xcodeproj direct child)
+    // 10. iOS (*.xcodeproj direct child)
     if dir_has_xcodeproj(dir) {
         return ProjectType::Ios;
+    }
+    // 11. Ruby (non-Rails) — Gemfile only (weak signal; checked last)
+    if has_gemfile {
+        return ProjectType::Ruby { rails: false };
     }
     ProjectType::Unknown
 }
@@ -274,9 +358,18 @@ fn detect_android_id_in_flutter_project(root: &Path) -> Option<String> {
         .join("main")
         .join("AndroidManifest.xml");
     if manifest_path.exists() {
-        return extract_package_from_manifest(&manifest_path);
+        if let Some(id) = extract_package_from_manifest(&manifest_path) {
+            return Some(id);
+        }
     }
-    None
+    // 4. Indirect: convention plugins / const refs / namespace.
+    detect_android_id_fallback(
+        &[
+            root.join("android").join("app"),
+            root.join("android").join("build-logic"),
+        ],
+        &manifest_path,
+    )
 }
 
 fn detect_android_id(android_root: &Path) -> Option<String> {
@@ -294,7 +387,112 @@ fn detect_android_id(android_root: &Path) -> Option<String> {
             return Some(id);
         }
     }
+    // 3. Indirect: convention plugins / const refs / namespace / manifest.
+    detect_android_id_fallback(
+        &[android_root.join("app"), android_root.join("build-logic")],
+        &android_root
+            .join("app")
+            .join("src")
+            .join("main")
+            .join("AndroidManifest.xml"),
+    )
+}
+
+/// Resolve an Android application id when no literal `applicationId = "..."`
+/// exists in `app/build.gradle{,.kts}` — e.g. projects that set it from a
+/// convention plugin via a Kotlin constant (`applicationId = APPLICATION_ID`)
+/// or only declare an AGP `namespace`. `scan_roots` are directory trees to
+/// search for gradle/kotlin sources; `manifest` is the last-resort
+/// `AndroidManifest.xml` carrying a legacy `package="..."`.
+fn detect_android_id_fallback(scan_roots: &[PathBuf], manifest: &Path) -> Option<String> {
+    let mut files = Vec::new();
+    for root in scan_roots {
+        collect_gradle_kotlin_files(root, 0, &mut files);
+    }
+
+    // 1. A literal applicationId anywhere (commonly inside a convention plugin).
+    for f in &files {
+        if let Ok(c) = fs::read_to_string(f) {
+            if let Some(id) = captured(kotlin_dsl_pattern(), &c)
+                .or_else(|| captured(groovy_dsl_pattern(), &c))
+            {
+                return Some(id);
+            }
+        }
+    }
+    // 2. `applicationId = IDENT` resolved against a `val IDENT = "..."` constant.
+    for f in &files {
+        if let Ok(c) = fs::read_to_string(f) {
+            if let Some(ident) = captured(application_id_ref_pattern(), &c) {
+                if let Some(id) = resolve_kotlin_string_const(&files, &ident) {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    // 3. AGP `namespace = "..."` literal (defaults to the application id).
+    for f in &files {
+        if let Ok(c) = fs::read_to_string(f) {
+            if let Some(ns) = captured(namespace_pattern(), &c) {
+                return Some(ns);
+            }
+        }
+    }
+    // 4. Legacy AndroidManifest.xml `package="..."`.
+    if manifest.exists() {
+        return extract_package_from_manifest(manifest);
+    }
     None
+}
+
+/// Recursively collect `*.gradle`, `*.gradle.kts`, and `*.kt` files under
+/// `dir`, skipping `build` output directories. Bounded by `MAX_LEVELS` depth.
+fn collect_gradle_kotlin_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > MAX_LEVELS {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().and_then(|n| n.to_str()) == Some("build") {
+                continue;
+            }
+            collect_gradle_kotlin_files(&path, depth + 1, out);
+        } else {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.ends_with(".gradle.kts") || name.ends_with(".gradle") || name.ends_with(".kt")
+            {
+                out.push(path);
+            }
+        }
+    }
+}
+
+/// Find a Kotlin `(const) val IDENT = "..."` string constant across `files`.
+fn resolve_kotlin_string_const(files: &[PathBuf], ident: &str) -> Option<String> {
+    let re = Regex::new(&format!(
+        r#"\bval\s+{}\s*(?::\s*String\s*)?=\s*"([^"]+)""#,
+        regex::escape(ident)
+    ))
+    .ok()?;
+    for f in files {
+        if let Ok(c) = fs::read_to_string(f) {
+            if let Some(id) = captured(&re, &c) {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// First capture group of `re` in `text`, as an owned String.
+fn captured(re: &Regex, text: &str) -> Option<String> {
+    re.captures(text)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
 }
 
 fn extract_application_id_from_gradle(path: &Path, is_kts: bool) -> Option<String> {
@@ -590,5 +788,177 @@ mod tests {
     #[test]
     fn empty_dir_is_unknown() {
         case(&[], ProjectType::Unknown);
+    }
+
+    // A fastlane Gemfile at an Android project root must not shadow the Android
+    // anchor (regression: ha-android was misclassified as Ruby).
+    #[test]
+    fn android_with_fastlane_gemfile() {
+        case(
+            &[
+                Marker::file("Gemfile"),
+                Marker::file("app/build.gradle.kts"),
+            ],
+            ProjectType::Android,
+        );
+    }
+
+    // Same precedence rule for an iOS project carrying a fastlane Gemfile.
+    #[test]
+    fn ios_with_fastlane_gemfile() {
+        case(
+            &[Marker::file("Gemfile"), Marker::dir("Foo.xcodeproj/")],
+            ProjectType::Ios,
+        );
+    }
+
+    #[test]
+    fn android_id_literal_in_app_gradle() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[Marker::file_with(
+                "app/build.gradle.kts",
+                "android {\n    defaultConfig {\n        applicationId = \"com.example.app\"\n    }\n}\n",
+            )],
+        );
+        assert_eq!(
+            detect_android_id(tmp.path()),
+            Some("com.example.app".to_string())
+        );
+    }
+
+    // applicationId set from a Kotlin constant in a convention plugin (the
+    // ha-android shape).
+    #[test]
+    fn android_id_via_convention_plugin_const() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file_with(
+                    "app/build.gradle.kts",
+                    "plugins { id(\"homeassistant.android.application\") }\n",
+                ),
+                Marker::file_with(
+                    "build-logic/convention/src/main/kotlin/AndroidApplicationConventionPlugin.kt",
+                    "private const val APPLICATION_ID = \"io.homeassistant.companion.android\"\n\
+                     class P { fun a() { namespace = APPLICATION_ID\n applicationId = APPLICATION_ID } }\n",
+                ),
+            ],
+        );
+        assert_eq!(
+            detect_android_id(tmp.path()),
+            Some("io.homeassistant.companion.android".to_string())
+        );
+    }
+
+    // Only an AGP namespace literal is present (no applicationId at all).
+    #[test]
+    fn android_id_via_namespace_literal() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[Marker::file_with(
+                "app/build.gradle.kts",
+                "android {\n    namespace = \"com.example.ns\"\n}\n",
+            )],
+        );
+        assert_eq!(
+            detect_android_id(tmp.path()),
+            Some("com.example.ns".to_string())
+        );
+    }
+
+    fn roots(projects: &[(AppInfo, PathBuf)], base: &Path) -> Vec<String> {
+        projects
+            .iter()
+            .map(|(_, p)| {
+                p.strip_prefix(base)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    // Projects nested deeper than one level (the `~/projects/<group>/<repo>`
+    // shape) must all be discovered, not just direct children.
+    #[test]
+    fn discover_finds_deeply_nested_projects() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("group-a/repo1/Cargo.toml"),
+                Marker::file("group-a/repo2/go.mod"),
+                Marker::file("group-b/nested/repo3/pubspec.yaml"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(
+            roots(&got, tmp.path()),
+            vec![
+                "group-a/repo1".to_string(),
+                "group-a/repo2".to_string(),
+                "group-b/nested/repo3".to_string(),
+            ]
+        );
+    }
+
+    // Discovery stops at a project root: a Flutter app's internal android/ios
+    // sub-projects must not surface as separate entries.
+    #[test]
+    fn discover_does_not_descend_into_found_project() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("app/pubspec.yaml"),
+                Marker::file("app/android/app/build.gradle.kts"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(roots(&got, tmp.path()), vec!["app".to_string()]);
+        assert_eq!(got[0].0.project_type, ProjectType::Flutter);
+    }
+
+    // Dependency/build/VCS dirs are never descended into during discovery.
+    #[test]
+    fn discover_skips_dependency_dirs() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("node_modules/pkg/Cargo.toml"),
+                Marker::file(".git/sub/go.mod"),
+                Marker::file("real/Cargo.toml"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(roots(&got, tmp.path()), vec!["real".to_string()]);
+    }
+
+    // `build` output dirs must be skipped so stale compiled caches never win.
+    #[test]
+    fn android_id_skips_build_output_dirs() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file_with(
+                    "app/build.gradle.kts",
+                    "android {\n    namespace = \"com.example.real\"\n}\n",
+                ),
+                Marker::file_with(
+                    "app/build/generated/Stale.kt",
+                    "val APPLICATION_ID = \"com.example.stale\"\n",
+                ),
+            ],
+        );
+        assert_eq!(
+            detect_android_id(tmp.path()),
+            Some("com.example.real".to_string())
+        );
     }
 }

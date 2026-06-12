@@ -165,10 +165,16 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
+/// `.DS_Store` is pure macOS Finder metadata with zero recovery value, so it
+/// is deleted without a confirmation prompt (unlike the other extras).
+fn is_noconfirm_file(path: &Path) -> bool {
+    path.file_name().and_then(|n| n.to_str()) == Some(".DS_Store")
+}
+
 /// Per-project scan for size-hungry, platform-agnostic junk files (JVM heap
 /// dumps, crash logs, npm/yarn debug logs, editor backups, OS metadata, etc.).
-/// Prints findings with sizes; in dry-run only lists. Otherwise prompts once
-/// before deleting.
+/// Prints findings with sizes; in dry-run only lists. `.DS_Store` files are
+/// deleted unconditionally; the rest prompt once before deleting.
 pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, _verbose: bool) {
     let logger = Logger::new();
     let found = find_extras(root);
@@ -194,41 +200,61 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, _verbose: bool) {
         return;
     }
 
-    let prompt = format!(
-        "  Delete {} extra file(s) totaling {}?",
-        found.len(),
-        human_size(total)
-    );
-    if !common::confirm(&logger, &prompt, false) {
-        logger.detail("[extras] skipped");
-        return;
-    }
+    let (noconfirm, prompted): (Vec<_>, Vec<_>) =
+        found.iter().partition(|(p, _, _)| is_noconfirm_file(p));
 
     let mut ok: usize = 0;
     let mut err: usize = 0;
-    for (path, _, is_dir) in &found {
-        let res = if *is_dir {
-            std::fs::remove_dir_all(path)
-        } else {
-            std::fs::remove_file(path)
-        };
-        match res {
+
+    // Auto-delete `.DS_Store` without prompting.
+    for (path, _, is_dir) in &noconfirm {
+        match delete_one(path, *is_dir) {
             Ok(_) => ok += 1,
             Err(e) => {
                 err += 1;
-                logger.err(&format!(
-                    "[extras] failed to delete {}: {}",
-                    path.display(),
-                    e
-                ));
+                logger.err(&format!("[extras] failed to delete {}: {}", path.display(), e));
             }
         }
     }
-    logger.success(&format!(
-        "[extras] deleted {} item(s){}",
-        ok,
-        if err > 0 { format!(", {} failed", err) } else { String::new() }
-    ));
+
+    // Everything else is gated by a single default-No confirmation.
+    if !prompted.is_empty() {
+        let total_prompted: u64 = prompted.iter().map(|(_, s, _)| *s).sum();
+        let prompt = format!(
+            "  Delete {} extra file(s) totaling {}?",
+            prompted.len(),
+            human_size(total_prompted)
+        );
+        if common::confirm(&logger, &prompt, false) {
+            for (path, _, is_dir) in &prompted {
+                match delete_one(path, *is_dir) {
+                    Ok(_) => ok += 1,
+                    Err(e) => {
+                        err += 1;
+                        logger.err(&format!("[extras] failed to delete {}: {}", path.display(), e));
+                    }
+                }
+            }
+        } else {
+            logger.detail("[extras] skipped (kept prompted files)");
+        }
+    }
+
+    if ok > 0 || err > 0 {
+        logger.success(&format!(
+            "[extras] deleted {} item(s){}",
+            ok,
+            if err > 0 { format!(", {} failed", err) } else { String::new() }
+        ));
+    }
+}
+
+fn delete_one(path: &Path, is_dir: bool) -> std::io::Result<()> {
+    if is_dir {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 #[cfg(test)]
