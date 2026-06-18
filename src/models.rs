@@ -139,6 +139,20 @@ pub enum DevicePlatform {
     Ios,
 }
 
+impl DevicePlatform {
+    pub fn label(&self) -> &'static str {
+        match self {
+            DevicePlatform::Android => "Android",
+            DevicePlatform::Ios => "iOS",
+        }
+    }
+
+    pub fn from_device_id(device_id: &str) -> Self {
+        let looks_ios = device_id.len() == 36 && device_id.matches('-').count() == 4;
+        if looks_ios { DevicePlatform::Ios } else { DevicePlatform::Android }
+    }
+}
+
 /// Whether a device is an emulator/simulator or physical hardware.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeviceType {
@@ -179,5 +193,31 @@ impl std::fmt::Display for Device {
             "Device(id: {}, name: {}, platform: {:?}, type: {:?})",
             self.id, self.name, self.platform, self.device_type
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn device_platform_label_android() {
+        assert_eq!(DevicePlatform::Android.label(), "Android");
+    }
+
+    #[test]
+    fn device_platform_label_ios() {
+        assert_eq!(DevicePlatform::Ios.label(), "iOS");
+    }
+
+    #[test]
+    fn device_platform_from_device_id_ios_uuid() {
+        let uuid = "12345678-1234-1234-1234-123456789012";
+        assert_eq!(DevicePlatform::from_device_id(uuid), DevicePlatform::Ios);
+    }
+
+    #[test]
+    fn device_platform_from_device_id_android() {
+        assert_eq!(DevicePlatform::from_device_id("emulator-5554"), DevicePlatform::Android);
     }
 }

@@ -5,10 +5,11 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::app_detector::AppDetector;
+use crate::commands::device_outcome;
 use crate::device_manager::DeviceManager;
 use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform, ProjectType};
-use crate::runner::{RunResult, Runner};
+use crate::runner::Runner;
 
 #[derive(Args, Debug)]
 pub struct KillArgs {
@@ -56,7 +57,7 @@ fn kill_mobile(
     logger: &Logger,
 ) -> i32 {
     if let Some(ref device_id) = args.device {
-        let platform = infer_platform(device_id);
+        let platform = DevicePlatform::from_device_id(device_id);
         return match force_stop_on(runner, app_info, platform, Some(device_id), logger, args.verbose)
         {
             Some(true) => 0,
@@ -109,7 +110,7 @@ fn try_platform(
     let targets: Vec<_> = devices.iter().filter(|d| d.platform == platform).collect();
 
     if targets.is_empty() {
-        logger.warn(&format!("No running {} devices found.", platform_label(&platform)));
+        logger.warn(&format!("No running {} devices found.", platform.label()));
         return false;
     }
 
@@ -153,11 +154,11 @@ fn force_stop_on(
             if result.is_success() {
                 pb.finish_with_message(format!("{} Stopped app on {}", "✓".green(), label));
                 Some(true)
-            } else if device_id.is_none() && is_multi_device_error(&result) {
+            } else if device_id.is_none() && device_outcome::is_multi_device_error(&result) {
                 pb.finish_and_clear();
                 None
             } else {
-                let err = error_text(&result);
+                let err = device_outcome::error_text(&result);
                 pb.finish_with_message(format!("{} Failed: {} — {}", "✗".red(), label, err));
                 if verbose {
                     logger.err(err);
@@ -183,14 +184,14 @@ fn force_stop_on(
             if result.is_success() {
                 pb.finish_with_message(format!("{} Stopped app on {}", "✓".green(), label));
                 Some(true)
-            } else if device_id.is_none() && is_no_booted_error(&result) {
+            } else if device_id.is_none() && device_outcome::is_no_booted_error(&result) {
                 pb.finish_and_clear();
                 None
-            } else if is_not_running_error(&result) {
+            } else if device_outcome::is_not_running_error(&result) {
                 pb.finish_with_message(format!("{} App not running on {}", "•".yellow(), label));
                 Some(true)
             } else {
-                let err = error_text(&result);
+                let err = device_outcome::error_text(&result);
                 pb.finish_with_message(format!("{} Failed: {} — {}", "✗".red(), label, err));
                 if verbose {
                     logger.err(err);
@@ -235,7 +236,7 @@ pub(crate) fn kill_server(runner: &dyn Runner, root: &Path, logger: &Logger, ver
         if result.is_success() {
             logger.success(&format!("{} Killed {}", "✓".green(), label));
         } else {
-            let err = error_text(&result);
+            let err = device_outcome::error_text(&result);
             logger.err(&format!("{} Failed to kill {} — {}", "✗".red(), label, err));
             if verbose {
                 logger.err(err);
@@ -314,44 +315,3 @@ fn port_from_name(name: &str) -> Option<String> {
         .map(|p| p.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers.
-// ---------------------------------------------------------------------------
-
-fn error_text(r: &RunResult) -> &str {
-    if !r.stderr.is_empty() { &r.stderr } else { &r.stdout }
-}
-
-fn is_multi_device_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("more than one device")
-        || t.contains("more than one emulator")
-        || t.contains("multiple devices")
-}
-
-fn is_no_booted_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("no devices are booted")
-        || t.contains("unable to find")
-        || t.contains("no matching")
-        || t.contains("invalid device")
-}
-
-fn is_not_running_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("found nothing to terminate")
-        || t.contains("no such process")
-        || t.contains("not running")
-}
-
-fn platform_label(p: &DevicePlatform) -> &'static str {
-    match p {
-        DevicePlatform::Android => "Android",
-        DevicePlatform::Ios => "iOS",
-    }
-}
-
-fn infer_platform(device_id: &str) -> DevicePlatform {
-    let looks_ios = device_id.len() == 36 && device_id.matches('-').count() == 4;
-    if looks_ios { DevicePlatform::Ios } else { DevicePlatform::Android }
-}

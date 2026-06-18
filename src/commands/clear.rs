@@ -2,10 +2,11 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::app_detector::AppDetector;
+use crate::commands::device_outcome;
 use crate::device_manager::DeviceManager;
 use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform, ProjectType};
-use crate::runner::{RunResult, Runner};
+use crate::runner::Runner;
 
 #[derive(Args, Debug)]
 pub struct ClearArgs {
@@ -29,7 +30,7 @@ pub fn run(args: &ClearArgs, runner: &dyn Runner) -> i32 {
     }
 
     if let Some(ref device_id) = args.device {
-        let platform = infer_platform(device_id);
+        let platform = DevicePlatform::from_device_id(device_id);
         return match clear_on(runner, &app_info, platform, Some(device_id), &logger, args.verbose) {
             Some(true) => 0,
             _ => 1,
@@ -82,7 +83,7 @@ fn try_platform(
     let targets: Vec<_> = devices.iter().filter(|d| d.platform == platform).collect();
 
     if targets.is_empty() {
-        logger.warn(&format!("No running {} devices found.", platform_label(&platform)));
+        logger.warn(&format!("No running {} devices found.", platform.label()));
         return false;
     }
 
@@ -134,11 +135,11 @@ fn clear_android(
         runner.run("adb", &["shell", "pm", "clear", &pkg], None)
     };
     if !clear_result.is_success() {
-        if device_id.is_none() && is_multi_device_error(&clear_result) {
+        if device_id.is_none() && device_outcome::is_multi_device_error(&clear_result) {
             pb.finish_and_clear();
             return None;
         }
-        let err = error_text(&clear_result);
+        let err = device_outcome::error_text(&clear_result);
         pb.finish_with_message(format!("{} Failed to clear: {} — {}", "✗".red(), label, err));
         if verbose {
             logger.err(err);
@@ -169,7 +170,7 @@ fn clear_android(
         pb.finish_with_message(format!("{} Cleared and restarted {}", "✓".green(), label));
         Some(true)
     } else {
-        let err = error_text(&launch_result);
+        let err = device_outcome::error_text(&launch_result);
         pb.finish_with_message(format!(
             "{} Cleared but failed to launch: {} — {}",
             "✗".red(),
@@ -210,11 +211,11 @@ fn clear_ios(
         None,
     );
     if !container_result.is_success() {
-        if device_id.is_none() && is_no_booted_error(&container_result) {
+        if device_id.is_none() && device_outcome::is_no_booted_error(&container_result) {
             pb.finish_and_clear();
             return None;
         }
-        let err = error_text(&container_result);
+        let err = device_outcome::error_text(&container_result);
         pb.finish_with_message(format!(
             "{} Failed to get container: {} — {}",
             "✗".red(),
@@ -249,7 +250,7 @@ fn clear_ios(
         pb.finish_with_message(format!("{} Cleared and restarted {}", "✓".green(), label));
         Some(true)
     } else {
-        let err = error_text(&launch_result);
+        let err = device_outcome::error_text(&launch_result);
         pb.finish_with_message(format!(
             "{} Cleared but failed to launch: {} — {}",
             "✗".red(),
@@ -263,33 +264,3 @@ fn clear_ios(
     }
 }
 
-fn error_text(r: &RunResult) -> &str {
-    if !r.stderr.is_empty() { &r.stderr } else { &r.stdout }
-}
-
-fn is_multi_device_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("more than one device")
-        || t.contains("more than one emulator")
-        || t.contains("multiple devices")
-}
-
-fn is_no_booted_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("no devices are booted")
-        || t.contains("unable to find")
-        || t.contains("no matching")
-        || t.contains("invalid device")
-}
-
-fn platform_label(p: &DevicePlatform) -> &'static str {
-    match p {
-        DevicePlatform::Android => "Android",
-        DevicePlatform::Ios => "iOS",
-    }
-}
-
-fn infer_platform(device_id: &str) -> DevicePlatform {
-    let looks_ios = device_id.len() == 36 && device_id.matches('-').count() == 4;
-    if looks_ios { DevicePlatform::Ios } else { DevicePlatform::Android }
-}

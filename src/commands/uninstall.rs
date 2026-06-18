@@ -2,10 +2,11 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::app_detector::AppDetector;
+use crate::commands::device_outcome;
 use crate::device_manager::DeviceManager;
 use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform, ProjectType};
-use crate::runner::{RunResult, Runner};
+use crate::runner::Runner;
 
 #[derive(Args, Debug)]
 pub struct UninstallArgs {
@@ -30,7 +31,7 @@ pub fn run(args: &UninstallArgs, runner: &dyn Runner) -> i32 {
 
     // If a specific device was requested, run against it directly.
     if let Some(ref device_id) = args.device {
-        let platform = infer_platform(device_id);
+        let platform = DevicePlatform::from_device_id(device_id);
         return match uninstall_on(runner, &app_info, platform, Some(device_id), &logger, args.verbose) {
             Some(true) => 0,
             _ => 1,
@@ -93,7 +94,7 @@ fn try_platform(
     if targets.is_empty() {
         logger.warn(&format!(
             "No running {} devices found.",
-            platform_label(&platform)
+            platform.label()
         ));
         return false;
     }
@@ -139,11 +140,11 @@ fn uninstall_on(
             if result.is_success() {
                 pb.finish_with_message(format!("{} Uninstalled from {}", "✓".green(), label));
                 Some(true)
-            } else if device_id.is_none() && is_multi_device_error(&result) {
+            } else if device_id.is_none() && device_outcome::is_multi_device_error(&result) {
                 pb.finish_and_clear();
                 None
             } else {
-                let err = error_text(&result);
+                let err = device_outcome::error_text(&result);
                 pb.finish_with_message(format!(
                     "{} Failed: {} — {}",
                     "✗".red(),
@@ -174,11 +175,11 @@ fn uninstall_on(
             if result.is_success() {
                 pb.finish_with_message(format!("{} Uninstalled from {}", "✓".green(), label));
                 Some(true)
-            } else if device_id.is_none() && is_no_booted_error(&result) {
+            } else if device_id.is_none() && device_outcome::is_no_booted_error(&result) {
                 pb.finish_and_clear();
                 None
             } else {
-                let err = error_text(&result);
+                let err = device_outcome::error_text(&result);
                 pb.finish_with_message(format!(
                     "{} Failed: {} — {}",
                     "✗".red(),
@@ -194,34 +195,3 @@ fn uninstall_on(
     }
 }
 
-fn error_text(r: &RunResult) -> &str {
-    if !r.stderr.is_empty() { &r.stderr } else { &r.stdout }
-}
-
-fn is_multi_device_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("more than one device")
-        || t.contains("more than one emulator")
-        || t.contains("multiple devices")
-}
-
-fn is_no_booted_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("no devices are booted")
-        || t.contains("unable to find")
-        || t.contains("no matching")
-        || t.contains("invalid device")
-}
-
-fn platform_label(p: &DevicePlatform) -> &'static str {
-    match p {
-        DevicePlatform::Android => "Android",
-        DevicePlatform::Ios => "iOS",
-    }
-}
-
-fn infer_platform(device_id: &str) -> DevicePlatform {
-    // iOS simulator UDIDs are UUID-like: 8-4-4-4-12 hex with dashes.
-    let looks_ios = device_id.len() == 36 && device_id.matches('-').count() == 4;
-    if looks_ios { DevicePlatform::Ios } else { DevicePlatform::Android }
-}

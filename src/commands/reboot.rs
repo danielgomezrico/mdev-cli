@@ -4,11 +4,12 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::app_detector::AppDetector;
+use crate::commands::device_outcome;
 use crate::commands::kill;
 use crate::device_manager::DeviceManager;
 use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform, NodePm, ProjectType, PyFw};
-use crate::runner::{RunResult, Runner};
+use crate::runner::Runner;
 
 #[derive(Args, Debug)]
 pub struct RebootArgs {
@@ -62,7 +63,7 @@ fn reboot_mobile(
     logger: &Logger,
 ) -> i32 {
     if let Some(ref device_id) = args.device {
-        let platform = infer_platform(device_id);
+        let platform = DevicePlatform::from_device_id(device_id);
         return match restart_on(runner, app_info, platform, Some(device_id), logger, args.verbose) {
             Some(true) => 0,
             _ => 1,
@@ -114,7 +115,7 @@ fn try_platform(
     let targets: Vec<_> = devices.iter().filter(|d| d.platform == platform).collect();
 
     if targets.is_empty() {
-        logger.warn(&format!("No running {} devices found.", platform_label(&platform)));
+        logger.warn(&format!("No running {} devices found.", platform.label()));
         return false;
     }
 
@@ -157,11 +158,11 @@ fn restart_on(
                 runner.run("adb", &["shell", "am", "force-stop", &pkg], None)
             };
             if !stop.is_success() {
-                if device_id.is_none() && is_multi_device_error(&stop) {
+                if device_id.is_none() && device_outcome::is_multi_device_error(&stop) {
                     pb.finish_and_clear();
                     return None;
                 }
-                let err = error_text(&stop);
+                let err = device_outcome::error_text(&stop);
                 pb.finish_with_message(format!("{} Failed to stop: {} — {}", "✗".red(), label, err));
                 if verbose {
                     logger.err(err);
@@ -192,7 +193,7 @@ fn restart_on(
                 pb.finish_with_message(format!("{} Restarted app on {}", "✓".green(), label));
                 Some(true)
             } else {
-                let err = error_text(&launch);
+                let err = device_outcome::error_text(&launch);
                 pb.finish_with_message(format!(
                     "{} Stopped but failed to launch: {} — {}",
                     "✗".red(),
@@ -222,13 +223,13 @@ fn restart_on(
 
             let term = runner.run("xcrun", &["simctl", "terminate", target, &bundle], None);
             if !term.is_success() {
-                if device_id.is_none() && is_no_booted_error(&term) {
+                if device_id.is_none() && device_outcome::is_no_booted_error(&term) {
                     pb.finish_and_clear();
                     return None;
                 }
                 // "not running" is fine — we're about to launch it anyway.
-                if !is_not_running_error(&term) {
-                    let err = error_text(&term);
+                if !device_outcome::is_not_running_error(&term) {
+                    let err = device_outcome::error_text(&term);
                     pb.finish_with_message(format!(
                         "{} Failed to stop: {} — {}",
                         "✗".red(),
@@ -247,7 +248,7 @@ fn restart_on(
                 pb.finish_with_message(format!("{} Restarted app on {}", "✓".green(), label));
                 Some(true)
             } else {
-                let err = error_text(&launch);
+                let err = device_outcome::error_text(&launch);
                 pb.finish_with_message(format!(
                     "{} Stopped but failed to launch: {} — {}",
                     "✗".red(),
@@ -289,44 +290,3 @@ fn start_command(pt: &ProjectType) -> Option<&'static str> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Shared helpers.
-// ---------------------------------------------------------------------------
-
-fn error_text(r: &RunResult) -> &str {
-    if !r.stderr.is_empty() { &r.stderr } else { &r.stdout }
-}
-
-fn is_multi_device_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("more than one device")
-        || t.contains("more than one emulator")
-        || t.contains("multiple devices")
-}
-
-fn is_no_booted_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("no devices are booted")
-        || t.contains("unable to find")
-        || t.contains("no matching")
-        || t.contains("invalid device")
-}
-
-fn is_not_running_error(r: &RunResult) -> bool {
-    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("found nothing to terminate")
-        || t.contains("no such process")
-        || t.contains("not running")
-}
-
-fn platform_label(p: &DevicePlatform) -> &'static str {
-    match p {
-        DevicePlatform::Android => "Android",
-        DevicePlatform::Ios => "iOS",
-    }
-}
-
-fn infer_platform(device_id: &str) -> DevicePlatform {
-    let looks_ios = device_id.len() == 36 && device_id.matches('-').count() == 4;
-    if looks_ios { DevicePlatform::Ios } else { DevicePlatform::Android }
-}
