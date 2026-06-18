@@ -4,9 +4,9 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::app_detector::AppDetector;
+use crate::commands::device_op;
 use crate::commands::device_outcome;
 use crate::commands::kill;
-use crate::device_manager::DeviceManager;
 use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform, NodePm, ProjectType, PyFw};
 use crate::runner::Runner;
@@ -78,14 +78,14 @@ fn reboot_mobile(
 
     if has_android {
         any_attempt = true;
-        if !try_platform(runner, app_info, DevicePlatform::Android, logger, args.verbose) {
+        if !device_op::run_on_platform(runner, app_info, DevicePlatform::Android, logger, args.verbose, restart_on) {
             any_fail = true;
         }
     }
 
     if has_ios {
         any_attempt = true;
-        if !try_platform(runner, app_info, DevicePlatform::Ios, logger, args.verbose) {
+        if !device_op::run_on_platform(runner, app_info, DevicePlatform::Ios, logger, args.verbose, restart_on) {
             any_fail = true;
         }
     }
@@ -96,38 +96,6 @@ fn reboot_mobile(
     }
 
     if any_fail { 1 } else { 0 }
-}
-
-fn try_platform(
-    runner: &dyn Runner,
-    app_info: &AppInfo,
-    platform: DevicePlatform,
-    logger: &Logger,
-    verbose: bool,
-) -> bool {
-    match restart_on(runner, app_info, platform.clone(), None, logger, verbose) {
-        Some(true) => return true,
-        Some(false) => return false,
-        None => {}
-    }
-
-    let devices = DeviceManager::new(runner).list_running_devices();
-    let targets: Vec<_> = devices.iter().filter(|d| d.platform == platform).collect();
-
-    if targets.is_empty() {
-        logger.warn(&format!("No running {} devices found.", platform.label()));
-        return false;
-    }
-
-    let mut ok = 0usize;
-    for d in &targets {
-        if let Some(true) =
-            restart_on(runner, app_info, platform.clone(), Some(&d.id), logger, verbose)
-        {
-            ok += 1;
-        }
-    }
-    ok == targets.len()
 }
 
 /// Returns Some(true) on success, Some(false) on real failure,

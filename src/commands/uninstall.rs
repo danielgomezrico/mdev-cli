@@ -2,8 +2,8 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::app_detector::AppDetector;
+use crate::commands::device_op;
 use crate::commands::device_outcome;
-use crate::device_manager::DeviceManager;
 use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform, ProjectType};
 use crate::runner::Runner;
@@ -46,14 +46,14 @@ pub fn run(args: &UninstallArgs, runner: &dyn Runner) -> i32 {
 
     if has_android {
         any_attempt = true;
-        if !try_platform(runner, &app_info, DevicePlatform::Android, &logger, args.verbose) {
+        if !device_op::run_on_platform(runner, &app_info, DevicePlatform::Android, &logger, args.verbose, uninstall_on) {
             any_fail = true;
         }
     }
 
     if has_ios {
         any_attempt = true;
-        if !try_platform(runner, &app_info, DevicePlatform::Ios, &logger, args.verbose) {
+        if !device_op::run_on_platform(runner, &app_info, DevicePlatform::Ios, &logger, args.verbose, uninstall_on) {
             any_fail = true;
         }
     }
@@ -64,49 +64,6 @@ pub fn run(args: &UninstallArgs, runner: &dyn Runner) -> i32 {
     }
 
     if any_fail { 1 } else { 0 }
-}
-
-/// Try the direct (no-device) uninstall first. On multi-device error, enumerate
-/// and run on each device of that platform. Returns true if at least one target
-/// succeeded and none failed.
-fn try_platform(
-    runner: &dyn Runner,
-    app_info: &AppInfo,
-    platform: DevicePlatform,
-    logger: &Logger,
-    verbose: bool,
-) -> bool {
-    // First attempt: no specific device.
-    let first = uninstall_on(runner, app_info, platform.clone(), None, logger, verbose);
-    match first {
-        Some(true) => return true,
-        Some(false) => return false, // real failure, not ambiguity
-        None => {} // multi-device / no-booted — fall through to enumerate
-    }
-
-    // Enumerate and run on each device of this platform.
-    let devices = DeviceManager::new(runner).list_running_devices();
-    let targets: Vec<_> = devices
-        .iter()
-        .filter(|d| d.platform == platform)
-        .collect();
-
-    if targets.is_empty() {
-        logger.warn(&format!(
-            "No running {} devices found.",
-            platform.label()
-        ));
-        return false;
-    }
-
-    let mut ok = 0usize;
-    for d in &targets {
-        match uninstall_on(runner, app_info, platform.clone(), Some(&d.id), logger, verbose) {
-            Some(true) => ok += 1,
-            _ => {}
-        }
-    }
-    ok == targets.len()
 }
 
 /// Run a single uninstall. Returns:
