@@ -220,4 +220,40 @@ mod tests {
     fn device_platform_from_device_id_android() {
         assert_eq!(DevicePlatform::from_device_id("emulator-5554"), DevicePlatform::Android);
     }
+
+    // GUARD: label strings are exactly "Android" and "iOS" (case-sensitive pin)
+    #[test]
+    fn label_android_exact_string() {
+        assert_eq!(DevicePlatform::Android.label(), "Android");
+    }
+
+    #[test]
+    fn label_ios_exact_string() {
+        assert_eq!(DevicePlatform::Ios.label(), "iOS");
+    }
+
+    // GUARD: empty string → len 0 ≠ 36 → Android
+    #[test]
+    fn from_device_id_empty_string() {
+        assert_eq!(DevicePlatform::from_device_id(""), DevicePlatform::Android);
+    }
+
+    // GUARD: 36-char string with wrong dash count (3 dashes) → Android
+    #[test]
+    fn from_device_id_36_chars_wrong_dash_count() {
+        // len==36, but only 3 dashes (not 4) → Android
+        // Replace the 4th dash with 'X': "12345678-1234-1234-1234X123456789012"
+        let id = "12345678-1234-1234-1234X123456789012";
+        assert_eq!(id.len(), 36);
+        assert_eq!(id.matches('-').count(), 3);
+        assert_eq!(DevicePlatform::from_device_id(id), DevicePlatform::Android);
+    }
+
+    // GUARD: short UUID-ish string (len < 36) → Android regardless of dash count
+    #[test]
+    fn from_device_id_short_uuid_ish() {
+        let id = "abc-def-ghi-jkl-m"; // len < 36, has dashes
+        assert!(id.len() < 36);
+        assert_eq!(DevicePlatform::from_device_id(id), DevicePlatform::Android);
+    }
 }

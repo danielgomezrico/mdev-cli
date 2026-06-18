@@ -47,6 +47,20 @@ mod tests {
         assert_eq!(error_text(&res), "out");
     }
 
+    // GUARD: both fields empty → empty string, no panic
+    #[test]
+    fn error_text_both_empty() {
+        let res = r("", "");
+        assert_eq!(error_text(&res), "");
+    }
+
+    // GUARD: stderr non-empty AND stdout set → prefers stderr
+    #[test]
+    fn error_text_prefers_stderr_when_stdout_also_set() {
+        let res = r("stdout content", "stderr content");
+        assert_eq!(error_text(&res), "stderr content");
+    }
+
     #[test]
     fn is_multi_device_error_true() {
         let res = r("", "error: more than one device attached");
@@ -56,6 +70,34 @@ mod tests {
     #[test]
     fn is_multi_device_error_false() {
         let res = r("", "device not found");
+        assert!(!is_multi_device_error(&res));
+    }
+
+    // GUARD: phrase in stdout only → still matches
+    #[test]
+    fn is_multi_device_error_detected_in_stdout_only() {
+        let res = r("more than one device attached", "");
+        assert!(is_multi_device_error(&res));
+    }
+
+    // GUARD: UPPERCASE phrase → lowercasing makes it match
+    #[test]
+    fn is_multi_device_error_case_insensitive() {
+        let res = r("", "ERROR: MORE THAN ONE DEVICE ATTACHED");
+        assert!(is_multi_device_error(&res));
+    }
+
+    // GUARD: phrase embedded inside a larger token → substring match still triggers
+    #[test]
+    fn is_multi_device_error_phrase_embedded_in_token() {
+        let res = r("", "[sdk] more than one device detected at startup");
+        assert!(is_multi_device_error(&res));
+    }
+
+    // GUARD: empty RunResult → false, no panic
+    #[test]
+    fn is_multi_device_error_empty_run_result() {
+        let res = r("", "");
         assert!(!is_multi_device_error(&res));
     }
 
@@ -71,6 +113,34 @@ mod tests {
         assert!(!is_no_booted_error(&res));
     }
 
+    // GUARD: phrase in stdout only
+    #[test]
+    fn is_no_booted_error_detected_in_stdout_only() {
+        let res = r("no devices are booted", "");
+        assert!(is_no_booted_error(&res));
+    }
+
+    // GUARD: UPPERCASE input → lowercasing makes it match
+    #[test]
+    fn is_no_booted_error_case_insensitive() {
+        let res = r("", "NO DEVICES ARE BOOTED");
+        assert!(is_no_booted_error(&res));
+    }
+
+    // GUARD: phrase embedded in a larger string
+    #[test]
+    fn is_no_booted_error_phrase_embedded_in_token() {
+        let res = r("", "simulator: no devices are booted right now");
+        assert!(is_no_booted_error(&res));
+    }
+
+    // GUARD: empty RunResult → false, no panic
+    #[test]
+    fn is_no_booted_error_empty_run_result() {
+        let res = r("", "");
+        assert!(!is_no_booted_error(&res));
+    }
+
     #[test]
     fn is_not_running_error_true() {
         let res = r("", "found nothing to terminate");
@@ -80,6 +150,34 @@ mod tests {
     #[test]
     fn is_not_running_error_false() {
         let res = r("", "process running fine");
+        assert!(!is_not_running_error(&res));
+    }
+
+    // GUARD: phrase in stdout only
+    #[test]
+    fn is_not_running_error_detected_in_stdout_only() {
+        let res = r("not running", "");
+        assert!(is_not_running_error(&res));
+    }
+
+    // GUARD: UPPERCASE input → lowercasing makes it match
+    #[test]
+    fn is_not_running_error_case_insensitive() {
+        let res = r("", "NOT RUNNING");
+        assert!(is_not_running_error(&res));
+    }
+
+    // GUARD: phrase embedded in larger token
+    #[test]
+    fn is_not_running_error_phrase_embedded_in_token() {
+        let res = r("", "app is not running on this device");
+        assert!(is_not_running_error(&res));
+    }
+
+    // GUARD: empty RunResult → false, no panic
+    #[test]
+    fn is_not_running_error_empty_run_result() {
+        let res = r("", "");
         assert!(!is_not_running_error(&res));
     }
 }
