@@ -85,4 +85,89 @@ mod tests {
             Some(keytool_path.to_string_lossy().to_string())
         );
     }
+
+    // GUARD: env set but candidate file does not exist → None (`.exists()` guard)
+    #[test]
+    fn find_env_set_file_missing_returns_none() {
+        let tmp = TempDir::new().unwrap();
+        // Do NOT create the file — the directory exists, the file does not
+        let env_var = "MDEV_TEST_FIND_ENV_MISSING_FILE";
+        std::env::set_var(env_var, tmp.path());
+
+        let runner = MockRunner { which_result: None };
+        let result = find(&runner, "keytool", env_var, &["bin"]);
+
+        std::env::remove_var(env_var);
+
+        assert_eq!(result, None);
+    }
+
+    // GUARD: adb public function — happy path via $ANDROID_HOME/platform-tools/adb
+    #[test]
+    fn adb_env_set_existing_file_returns_path() {
+        let tmp = TempDir::new().unwrap();
+        let pt_dir = tmp.path().join("platform-tools");
+        fs::create_dir_all(&pt_dir).unwrap();
+        let adb_path = pt_dir.join("adb");
+        fs::write(&adb_path, "").unwrap();
+
+        let env_var = "ANDROID_HOME";
+        let prev = std::env::var(env_var).ok();
+        std::env::set_var(env_var, tmp.path());
+
+        let runner = MockRunner { which_result: None };
+        let result = adb(&runner);
+
+        match prev {
+            Some(v) => std::env::set_var(env_var, v),
+            None => std::env::remove_var(env_var),
+        }
+
+        assert_eq!(result, Some(adb_path.to_string_lossy().to_string()));
+    }
+
+    // GUARD: multi-segment subpath (&["platform-tools", "x"]) builds the correct joined path
+    #[test]
+    fn find_multi_segment_subpath_builds_correct_path() {
+        let tmp = TempDir::new().unwrap();
+        let nested = tmp.path().join("platform-tools").join("x");
+        fs::create_dir_all(&nested).unwrap();
+        let exe_path = nested.join("adb");
+        fs::write(&exe_path, "").unwrap();
+
+        let env_var = "MDEV_TEST_FIND_MULTISEG";
+        std::env::set_var(env_var, tmp.path());
+
+        let runner = MockRunner { which_result: None };
+        let result = find(&runner, "adb", env_var, &["platform-tools", "x"]);
+
+        std::env::remove_var(env_var);
+
+        assert_eq!(result, Some(exe_path.to_string_lossy().to_string()));
+    }
+
+    // GUARD: env var set to "" produces a relative path; `.exists()` returns false → None, no panic
+    #[test]
+    fn find_env_empty_string_no_panic() {
+        let env_var = "MDEV_TEST_FIND_EMPTY_ROOT";
+        std::env::set_var(env_var, "");
+
+        let runner = MockRunner { which_result: None };
+        // Should not panic; the relative candidate path will not exist
+        let result = find(&runner, "keytool", env_var, &["bin"]);
+
+        std::env::remove_var(env_var);
+
+        assert_eq!(result, None);
+    }
+
+    // GUARD: which returns Some("") (empty string) → returned verbatim, no normalization
+    #[test]
+    fn find_which_empty_string_returned_verbatim() {
+        let runner = MockRunner {
+            which_result: Some(String::new()),
+        };
+        let result = keytool(&runner);
+        assert_eq!(result, Some(String::new()));
+    }
 }
