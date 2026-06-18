@@ -3,5 +3,7 @@ pub mod completions;
 pub mod doctor;
 pub mod emulator;
 pub mod keystore;
+pub mod kill;
 pub mod purge;
+pub mod reboot;
 pub mod uninstall;

@@ -8,7 +8,8 @@ mod runner;
 use clap::{CommandFactory, Parser, Subcommand};
 use commands::{
     clear::ClearArgs, completions::CompletionsArgs, doctor, emulator::EmulatorArgs,
-    keystore::KeystoreArgs, purge::PurgeArgs, uninstall::UninstallArgs,
+    keystore::KeystoreArgs, kill::KillArgs, purge::PurgeArgs, reboot::RebootArgs,
+    uninstall::UninstallArgs,
 };
 use runner::ProcessRunner;
 
@@ -36,6 +37,12 @@ enum Commands {
     /// Clear app data and restart on connected devices
     #[command(visible_alias = "c")]
     Clear(ClearArgs),
+    /// Kill the running process for the current project (app on devices, or dev server)
+    #[command(visible_alias = "x")]
+    Kill(KillArgs),
+    /// Restart the running process for the current project (relaunch the app, or restart the dev server)
+    #[command(visible_alias = "r")]
+    Reboot(RebootArgs),
     /// Purge build artifacts and caches
     #[command(visible_alias = "p")]
     Purge(PurgeArgs),
@@ -72,6 +79,8 @@ fn main() {
         }
         Some(Commands::Uninstall(ref args)) => commands::uninstall::run(args, &runner),
         Some(Commands::Clear(ref args)) => commands::clear::run(args, &runner),
+        Some(Commands::Kill(ref args)) => commands::kill::run(args, &runner),
+        Some(Commands::Reboot(ref args)) => commands::reboot::run(args, &runner),
         Some(Commands::Purge(ref args)) => commands::purge::run(args, &runner),
         Some(Commands::Keystore(ref args)) => commands::keystore::run(args, &runner),
         Some(Commands::Emulator(ref args)) => commands::emulator::run(args, &runner),

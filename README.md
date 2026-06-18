@@ -21,6 +21,8 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 |---|---|---|
 | `mdev uninstall` | `u` | Uninstall the app from connected devices/emulators |
 | `mdev clear` | `c` | Clear app data and restart on connected devices |
+| `mdev kill` | `x` | Kill the running process for the current project — force-stops the app on devices (Flutter/Android/iOS) or kills the dev server (Node, Rust, Go, Ruby/Rails, Python) |
+| `mdev reboot` | `r` | Restart the running process — relaunches the app on devices (Flutter/Android/iOS), or kills the dev server and prints its start command (Node, Rust, Go, Ruby/Rails, Python) |
 | `mdev purge` | `p` | Purge build artifacts and caches across Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, and Python projects |
 | `mdev keystore` | `k` | Interactively generate an Android signing keystore |
 | `mdev emulator config` | `e c` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
@@ -85,7 +87,7 @@ make install
 
 ## Usage
 
-Run any command from within your project directory. `uninstall`, `clear`, `keystore`, `emulator`, and `doctor` target Flutter/Android/iOS; `purge` works across every supported ecosystem (see the table above).
+Run any command from within your project directory. `uninstall`, `clear`, `keystore`, `emulator`, and `doctor` target Flutter/Android/iOS; `kill`, `reboot`, and `purge` work across every supported ecosystem (see the table above).
 
 ```sh
 # Uninstall from a specific device
@@ -96,6 +98,14 @@ mdev uninstall --all
 
 # Clear app data and relaunch on all devices
 mdev clear --all
+
+# Kill the current project's process
+mdev kill                                  # mobile: force-stop the app; server: kill the dev server
+mdev kill -d <device-id>                    # force-stop on a specific device (mobile)
+
+# Restart the current project's process
+mdev reboot                                # mobile: relaunch the app; server: kill it + print the start command
+mdev reboot -d <device-id>                  # relaunch on a specific device (mobile)
 
 # Purge all build caches (dry run first)
 mdev purge --dry-run
