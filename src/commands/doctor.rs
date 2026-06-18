@@ -1,6 +1,7 @@
 use colored::Colorize;
 use std::path::PathBuf;
 
+use crate::commands::tool_locator;
 use crate::logger::Logger;
 use crate::runner::Runner;
 
@@ -47,7 +48,7 @@ pub fn run(runner: &dyn Runner) -> i32 {
 
     // 2. adb version
     {
-        let adb = find_adb(runner);
+        let adb = tool_locator::adb(runner);
         if let Some(ref adb_path) = adb {
             let result = runner.run(adb_path, &["version"], None);
             if result.is_success() {
@@ -143,7 +144,7 @@ pub fn run(runner: &dyn Runner) -> i32 {
 
     // 6. keytool
     {
-        let keytool = find_keytool(runner);
+        let keytool = tool_locator::keytool(runner);
         if let Some(ref kt) = keytool {
             check_pass(&format!("keytool: {}", kt));
             pass_count += 1;
@@ -242,34 +243,6 @@ pub fn run(runner: &dyn Runner) -> i32 {
 
     logger.success(&format!("{}/{} checks passed", pass_count, TOTAL));
     0
-}
-
-fn find_adb(runner: &dyn Runner) -> Option<String> {
-    if let Some(path) = runner.which("adb") {
-        return Some(path);
-    }
-    if let Ok(android_home) = std::env::var("ANDROID_HOME") {
-        let candidate = PathBuf::from(android_home)
-            .join("platform-tools")
-            .join("adb");
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
-    }
-    None
-}
-
-fn find_keytool(runner: &dyn Runner) -> Option<String> {
-    if let Some(path) = runner.which("keytool") {
-        return Some(path);
-    }
-    if let Ok(java_home) = std::env::var("JAVA_HOME") {
-        let candidate = PathBuf::from(java_home).join("bin").join("keytool");
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
-    }
-    None
 }
 
 fn parse_flutter_version(stdout: &str) -> Option<String> {

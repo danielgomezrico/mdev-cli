@@ -3,6 +3,7 @@ use colored::Colorize;
 use std::path::PathBuf;
 
 use crate::app_detector::AppDetector;
+use crate::commands::tool_locator;
 use crate::logger::Logger;
 use crate::models::ProjectType;
 use crate::runner::Runner;
@@ -18,7 +19,7 @@ pub fn run(args: &KeystoreArgs, runner: &dyn Runner) -> i32 {
     let logger = Logger::new();
 
     // Find keytool
-    let keytool = find_keytool(runner);
+    let keytool = tool_locator::keytool(runner);
     if keytool.is_none() {
         logger.err("keytool not found. Install a JDK and ensure $JAVA_HOME is set.");
         return 1;
@@ -165,19 +166,6 @@ pub fn run(args: &KeystoreArgs, runner: &dyn Runner) -> i32 {
     }
 
     0
-}
-
-fn find_keytool(runner: &dyn Runner) -> Option<String> {
-    if let Some(path) = runner.which("keytool") {
-        return Some(path);
-    }
-    if let Ok(java_home) = std::env::var("JAVA_HOME") {
-        let candidate = PathBuf::from(java_home).join("bin").join("keytool");
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
-    }
-    None
 }
 
 fn find_project_root(dir: &std::path::Path) -> Option<PathBuf> {

@@ -7,4 +7,5 @@ pub mod keystore;
 pub mod kill;
 pub mod purge;
 pub mod reboot;
+pub mod tool_locator;
 pub mod uninstall;
