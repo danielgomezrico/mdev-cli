@@ -1,7 +1,7 @@
 use clap::Args;
 use colored::Colorize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::app_detector::AppDetector;
 use crate::logger::Logger;
@@ -21,6 +21,38 @@ pub mod extras;
 pub mod worktrees;
 
 use common::delete_path_verbose;
+
+/// Discover every project under `start_dir` for purge — downward only, with
+/// nested-path deduplication (a child repo is not listed separately when its
+/// parent path is already a detected project root).
+pub(crate) fn collect_projects(start_dir: &Path) -> Vec<(AppInfo, PathBuf)> {
+    let mut projects: HashMap<String, (AppInfo, PathBuf)> = HashMap::new();
+    for (info, root) in AppDetector::new().discover_projects(start_dir) {
+        let key = root.to_string_lossy().to_string();
+        projects.insert(key, (info, root));
+    }
+
+    let keys: Vec<String> = projects.keys().cloned().collect();
+    let mut to_remove: Vec<String> = Vec::new();
+    for a in &keys {
+        for b in &keys {
+            if a != b {
+                let b_with_sep = format!("{}{}", b, std::path::MAIN_SEPARATOR);
+                if a.starts_with(&b_with_sep) {
+                    to_remove.push(a.clone());
+                    break;
+                }
+            }
+        }
+    }
+    for key in to_remove {
+        projects.remove(&key);
+    }
+
+    let mut sorted: Vec<(AppInfo, PathBuf)> = projects.into_values().collect();
+    sorted.sort_by(|a, b| a.1.cmp(&b.1));
+    sorted
+}
 
 #[derive(Args, Debug, Default)]
 pub struct PurgeArgs {
@@ -105,44 +137,7 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
     let logger = Logger::new();
     let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    // Discover projects
-    let mut projects: HashMap<String, (AppInfo, PathBuf)> = HashMap::new();
-
-    // Current dir
-    let (info, root_opt) = AppDetector::new().detect_with_root(&current_dir);
-    if info.project_type != ProjectType::Unknown {
-        if let Some(root) = root_opt {
-            projects.insert(root.to_string_lossy().to_string(), (info, root));
-        }
-    }
-
-    // Nested projects (recursive, bounded depth)
-    for (sub_info, sub_root) in AppDetector::new().discover_projects(&current_dir) {
-        let key = sub_root.to_string_lossy().to_string();
-        projects.entry(key).or_insert((sub_info, sub_root));
-    }
-
-    // Remove sub-paths: if path A starts with path B + separator and B != A, remove A
-    let keys: Vec<String> = projects.keys().cloned().collect();
-    let mut to_remove: Vec<String> = Vec::new();
-    for a in &keys {
-        for b in &keys {
-            if a != b {
-                let b_with_sep = format!("{}{}", b, std::path::MAIN_SEPARATOR);
-                if a.starts_with(&b_with_sep) {
-                    to_remove.push(a.clone());
-                    break;
-                }
-            }
-        }
-    }
-    for key in to_remove {
-        projects.remove(&key);
-    }
-
-    // Sort by path
-    let mut sorted_projects: Vec<(AppInfo, PathBuf)> = projects.into_values().collect();
-    sorted_projects.sort_by(|a, b| a.1.cmp(&b.1));
+    let sorted_projects = collect_projects(&current_dir);
 
     if sorted_projects.is_empty() {
         logger.warn("No recognized projects found in current directory.");
@@ -492,5 +487,86 @@ mod tests {
     fn missing_version_root_is_ignored() {
         let caches = collect_flutter_sdk_caches(None, &[PathBuf::from("/nonexistent/path")]);
         assert!(caches.is_empty());
+    }
+
+    fn rel_paths(projects: &[(AppInfo, PathBuf)], base: &Path) -> Vec<String> {
+        projects
+            .iter()
+            .map(|(_, p)| {
+                p.strip_prefix(base)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect()
+    }
+
+    fn touch(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, contents).unwrap();
+    }
+
+    /// Purge must discover downward from CWD only — never walk up to a parent
+    /// container that happens to carry a weak marker file.
+    #[test]
+    fn collect_projects_does_not_walk_up_to_parent_container() {
+        let tmp = TempDir::new().unwrap();
+        touch(&tmp.path().join("Gemfile"), "");
+        touch(&tmp.path().join("repo/Cargo.toml"), "[package]\nname = \"x\"\n");
+
+        let repo = tmp.path().join("repo");
+        let got = collect_projects(&repo);
+
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1, repo);
+        assert_eq!(got[0].0.project_type, ProjectType::Rust);
+    }
+
+    /// End-to-end purge discovery path for the `$HOME` + `package.json` layout.
+    #[test]
+    fn collect_projects_home_layout_finds_nested_repos_only() {
+        let tmp = TempDir::new().unwrap();
+        touch(&tmp.path().join("package.json"), "{}");
+        touch(
+            &tmp.path().join("projects/open-source/cli-apps-helper/Cargo.toml"),
+            "[package]\nname = \"mdev\"\n",
+        );
+        touch(
+            &tmp.path().join("projects/other-app/go.mod"),
+            "module example.com/other\n",
+        );
+        touch(
+            &tmp.path().join("Library/Zed/languages/bash-language-server/package.json"),
+            "{}",
+        );
+
+        let got = collect_projects(tmp.path());
+        let paths = rel_paths(&got, tmp.path());
+
+        assert_eq!(
+            paths,
+            vec![
+                "projects/open-source/cli-apps-helper".to_string(),
+                "projects/other-app".to_string(),
+            ]
+        );
+        assert!(
+            got.iter().all(|(_, p)| p != tmp.path()),
+            "purge must not treat a container scan root as the sole project"
+        );
+    }
+
+    #[test]
+    fn collect_projects_single_repo_at_scan_root() {
+        let tmp = TempDir::new().unwrap();
+        touch(&tmp.path().join("Cargo.toml"), "[package]\nname = \"solo\"\n");
+
+        let got = collect_projects(tmp.path());
+
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].1, tmp.path().to_path_buf());
+        assert_eq!(got[0].0.project_type, ProjectType::Rust);
     }
 }

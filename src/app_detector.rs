@@ -119,7 +119,7 @@ impl AppDetector {
     /// dependency/build/VCS directories. Results are sorted by path.
     pub fn discover_projects(&self, start_dir: &Path) -> Vec<(AppInfo, PathBuf)> {
         let mut found: Vec<(AppInfo, PathBuf)> = Vec::new();
-        discover_recursive(start_dir, 0, &mut found);
+        discover_recursive(start_dir, 0, &mut found, true);
         found.sort_by(|a, b| a.1.cmp(&b.1));
         found
     }
@@ -131,6 +131,7 @@ impl AppDetector {
 fn is_discovery_skip_dir(name: &str) -> bool {
     matches!(
         name,
+        // Dependency / build output
         "node_modules"
             | "target"
             | "build"
@@ -146,32 +147,108 @@ fn is_discovery_skip_dir(name: &str) -> bool {
             | ".next"
             | ".nuxt"
             | ".turbo"
+            // macOS home-folder containers that never hold user repos
+            | "Library"
+            | "Applications"
+            | "Movies"
+            | "Music"
+            | "Pictures"
+            | "Public"
+            | "Parallels"
+            // Editor / package-manager internals
+            | "Caches"
+            | "store"
+            // SDK / module caches living directly under $HOME
+            | "fvm"
+            | "go"
+            | "pkg"
+            | "mod"
     )
 }
 
-fn discover_recursive(dir: &Path, depth: usize, out: &mut Vec<(AppInfo, PathBuf)>) {
+/// Flutter platform subdirectories are part of the parent app, not separate
+/// projects — skip them when descending from a Flutter scan root.
+fn is_flutter_platform_subdir(parent_pt: &ProjectType, child_name: &str) -> bool {
+    matches!(parent_pt, ProjectType::Flutter)
+        && matches!(
+            child_name,
+            "android" | "ios" | "web" | "linux" | "macos" | "windows"
+        )
+}
+
+/// Folder-by-folder discovery from `start_dir`:
+///   • **Scan root** (the directory the command was invoked in): classify
+///     self, then always walk children first. Container dirs like `$HOME`
+///     often carry stray `package.json` / `Gemfile` markers — if any child
+///     project exists, the root is not recorded. Only when no child project
+///     is found is the scan root kept (e.g. you `cd`'d into a single repo).
+///   • **Deeper levels**: classify self; on match record and stop (project
+///     internals are not separate projects); on unknown recurse into children.
+fn discover_recursive(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<(AppInfo, PathBuf)>,
+    is_scan_root: bool,
+) {
     let pt = classify_dir(dir);
-    if pt != ProjectType::Unknown {
+    let is_project = pt != ProjectType::Unknown;
+
+    if is_scan_root {
+        discover_children(dir, depth, out, &pt, true);
+        return;
+    }
+
+    if is_project {
         out.push((build_app_info(dir, &pt), dir.to_path_buf()));
         return;
     }
+
+    discover_children(dir, depth, out, &ProjectType::Unknown, false);
+}
+
+fn discover_children(
+    dir: &Path,
+    depth: usize,
+    out: &mut Vec<(AppInfo, PathBuf)>,
+    parent_pt: &ProjectType,
+    is_scan_root: bool,
+) {
     if depth >= MAX_DISCOVERY_DEPTH {
+        if is_scan_root && *parent_pt != ProjectType::Unknown {
+            out.push((build_app_info(dir, parent_pt), dir.to_path_buf()));
+        }
         return;
     }
+
     let Ok(entries) = fs::read_dir(dir) else {
+        if is_scan_root && *parent_pt != ProjectType::Unknown {
+            out.push((build_app_info(dir, parent_pt), dir.to_path_buf()));
+        }
         return;
     };
+
+    let mut child_found = false;
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        // Hidden dirs (`.git`, `.gradle`, …) never hold projects we target.
         if name.starts_with('.') || is_discovery_skip_dir(name) {
             continue;
         }
-        discover_recursive(&path, depth + 1, out);
+        if is_scan_root && is_flutter_platform_subdir(parent_pt, name) {
+            continue;
+        }
+        let before = out.len();
+        discover_recursive(&path, depth + 1, out, false);
+        if out.len() > before {
+            child_found = true;
+        }
+    }
+
+    if is_scan_root && !child_found && *parent_pt != ProjectType::Unknown {
+        out.push((build_app_info(dir, parent_pt), dir.to_path_buf()));
     }
 }
 
@@ -882,6 +959,40 @@ mod tests {
             .collect()
     }
 
+    /// Pre-fix `discover_recursive`: classified the scan root and returned
+    /// immediately without walking children — the source of the `$HOME` bug.
+    fn legacy_discover_recursive(dir: &Path, depth: usize, out: &mut Vec<(AppInfo, PathBuf)>) {
+        let pt = classify_dir(dir);
+        if pt != ProjectType::Unknown {
+            out.push((build_app_info(dir, &pt), dir.to_path_buf()));
+            return;
+        }
+        if depth >= MAX_DISCOVERY_DEPTH {
+            return;
+        }
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') || is_discovery_skip_dir(name) {
+                continue;
+            }
+            legacy_discover_recursive(&path, depth + 1, out);
+        }
+    }
+
+    fn legacy_discover_projects(start_dir: &Path) -> Vec<(AppInfo, PathBuf)> {
+        let mut found: Vec<(AppInfo, PathBuf)> = Vec::new();
+        legacy_discover_recursive(start_dir, 0, &mut found);
+        found.sort_by(|a, b| a.1.cmp(&b.1));
+        found
+    }
+
     // Projects nested deeper than one level (the `~/projects/<group>/<repo>`
     // shape) must all be discovered, not just direct children.
     #[test]
@@ -921,6 +1032,150 @@ mod tests {
         let got = AppDetector::new().discover_projects(tmp.path());
         assert_eq!(roots(&got, tmp.path()), vec!["app".to_string()]);
         assert_eq!(got[0].0.project_type, ProjectType::Flutter);
+    }
+
+    /// Exact reproduction of the reported bug: `mdev purge` from `$HOME` with a
+    /// stray `package.json` returned only `→ /Users/dan` and never reached
+    /// `~/projects/...`. The fixed scanner must list nested repos and must not
+    /// report the container root when children exist.
+    #[test]
+    fn regression_home_package_json_finds_nested_repos_not_container() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("package.json"),
+                Marker::file("projects/open-source/cli-apps-helper/Cargo.toml"),
+                Marker::file("projects/other-app/go.mod"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        let paths = roots(&got, tmp.path());
+        assert_eq!(
+            paths,
+            vec![
+                "projects/open-source/cli-apps-helper".to_string(),
+                "projects/other-app".to_string(),
+            ],
+            "must discover nested repos under a container scan root"
+        );
+        assert!(
+            !paths.contains(&"".to_string()),
+            "container scan root must not be the only (or any) result when children exist"
+        );
+        assert_ne!(
+            got.len(),
+            1,
+            "must not collapse to a single bogus project at the scan root"
+        );
+    }
+
+    /// Documents the pre-fix failure mode: stopping at the first scan-root match.
+    /// Kept so CI proves we understand the regression and won't reintroduce it.
+    #[test]
+    fn regression_legacy_scan_root_stop_would_miss_nested_repos() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("package.json"),
+                Marker::file("projects/open-source/cli-apps-helper/Cargo.toml"),
+                Marker::file("projects/other-app/go.mod"),
+            ],
+        );
+        let legacy = legacy_discover_projects(tmp.path());
+        let legacy_paths = roots(&legacy, tmp.path());
+        assert_eq!(
+            legacy_paths,
+            vec!["".to_string()],
+            "legacy behavior incorrectly reports only the container root"
+        );
+
+        let fixed = AppDetector::new().discover_projects(tmp.path());
+        let fixed_paths = roots(&fixed, tmp.path());
+        assert_ne!(
+            fixed_paths, legacy_paths,
+            "fixed discovery must differ from the legacy bug"
+        );
+        assert_eq!(fixed_paths.len(), 2);
+    }
+
+    // Container scan roots (e.g. $HOME) with stray marker files must not
+    // block discovery of real projects nested underneath.
+    #[test]
+    fn discover_container_scan_root_defers_to_children_gemfile() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("Gemfile"),
+                Marker::file("projects/open-source/cli-apps-helper/Cargo.toml"),
+                Marker::file("projects/other-app/go.mod"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(
+            roots(&got, tmp.path()),
+            vec![
+                "projects/open-source/cli-apps-helper".to_string(),
+                "projects/other-app".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn discover_container_scan_root_defers_to_children_package_json() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("package.json"),
+                Marker::file("projects/foo/Cargo.toml"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(roots(&got, tmp.path()), vec!["projects/foo".to_string()]);
+    }
+
+    // A standalone project at the scan root (no child projects) is still found.
+    #[test]
+    fn discover_scan_root_kept_when_no_children() {
+        let tmp = TempDir::new().unwrap();
+        seed(&tmp, &[Marker::file("Gemfile")]);
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(roots(&got, tmp.path()), vec!["".to_string()]);
+        assert_eq!(got[0].0.project_type, ProjectType::Ruby { rails: false });
+    }
+
+    // Strong project at scan root does not descend into its own internals.
+    #[test]
+    fn discover_strong_scan_root_does_not_descend() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("pubspec.yaml"),
+                Marker::file("android/app/build.gradle.kts"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(roots(&got, tmp.path()), vec!["".to_string()]);
+        assert_eq!(got[0].0.project_type, ProjectType::Flutter);
+    }
+
+    #[test]
+    fn discover_skips_macos_home_containers() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file("package.json"),
+                Marker::file("Library/Zed/pkg/package.json"),
+                Marker::file("projects/real/Cargo.toml"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(roots(&got, tmp.path()), vec!["projects/real".to_string()]);
     }
 
     // Dependency/build/VCS dirs are never descended into during discovery.
