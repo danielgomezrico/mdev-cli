@@ -19,13 +19,13 @@ const MAX_DISCOVERY_DEPTH: usize = 6;
 /// and `requirements.txt` while bounding cost.
 const SCAN_BYTES: usize = 64 * 1024;
 
-// Kotlin DSL: applicationId = "com.example.app"
+// Kotlin DSL: applicationId = "com.example.app" (kept for narrow/legacy matching)
 fn kotlin_dsl_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r#"applicationId\s*=\s*"([^"]+)""#).unwrap())
 }
 
-// Groovy DSL: applicationId 'com.example.app'
+// Groovy DSL: applicationId 'com.example.app' (narrow single-quote; broad literal below handles more)
 fn groovy_dsl_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"applicationId\s+'([^']+)'").unwrap())
@@ -54,6 +54,16 @@ fn application_id_ref_pattern() -> &'static Regex {
 fn namespace_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r#"namespace\s*=?\s*["']([^"']+)["']"#).unwrap())
+}
+
+// Broad literal matcher for applicationId across DSLs and styles.
+// Covers:
+// - Groovy bare: applicationId "com..." or applicationId 'com...'
+// - assignment:   applicationId = "com..." (KTS/Groovy)
+// - setter:       applicationId.set("com...") (common in KTS)
+fn application_id_literal_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"applicationId\s*(?:=|\.set\s*\(|\s)\s*["']([^"']+)["']"#).unwrap())
 }
 
 pub struct AppDetector;
@@ -442,6 +452,7 @@ fn detect_android_id_in_flutter_project(root: &Path) -> Option<String> {
     // 4. Indirect: convention plugins / const refs / namespace.
     detect_android_id_fallback(
         &[
+            root.join("android").to_path_buf(),
             root.join("android").join("app"),
             root.join("android").join("build-logic"),
         ],
@@ -466,7 +477,7 @@ fn detect_android_id(android_root: &Path) -> Option<String> {
     }
     // 3. Indirect: convention plugins / const refs / namespace / manifest.
     detect_android_id_fallback(
-        &[android_root.join("app"), android_root.join("build-logic")],
+        &[android_root.to_path_buf(), android_root.join("app"), android_root.join("build-logic")],
         &android_root
             .join("app")
             .join("src")
@@ -490,6 +501,10 @@ fn detect_android_id_fallback(scan_roots: &[PathBuf], manifest: &Path) -> Option
     // 1. A literal applicationId anywhere (commonly inside a convention plugin).
     for f in &files {
         if let Ok(c) = fs::read_to_string(f) {
+            if let Some(id) = captured(application_id_literal_pattern(), &c) {
+                return Some(id);
+            }
+            // legacy specific
             if let Some(id) = captured(kotlin_dsl_pattern(), &c)
                 .or_else(|| captured(groovy_dsl_pattern(), &c))
             {
@@ -572,19 +587,20 @@ fn captured(re: &Regex, text: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
-fn extract_application_id_from_gradle(path: &Path, is_kts: bool) -> Option<String> {
+fn extract_application_id_from_gradle(path: &Path, _is_kts: bool) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
-    if is_kts {
-        kotlin_dsl_pattern()
-            .captures(&content)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-    } else {
-        groovy_dsl_pattern()
-            .captures(&content)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
+    // Prefer broad literal (covers bare Groovy double/single, =, and .set across both DSLs)
+    if let Some(id) = captured(application_id_literal_pattern(), &content) {
+        return Some(id);
     }
+    // Legacy specific fallbacks (kept for safety / old narrow cases)
+    if let Some(id) = kotlin_dsl_pattern().captures(&content).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()) {
+        return Some(id);
+    }
+    groovy_dsl_pattern()
+        .captures(&content)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
 }
 
 fn extract_package_from_manifest(path: &Path) -> Option<String> {
@@ -944,6 +960,61 @@ mod tests {
         assert_eq!(
             detect_android_id(tmp.path()),
             Some("com.example.ns".to_string())
+        );
+    }
+
+    // Groovy DSL bare double-quotes (very common; previously only single-quote was supported)
+    #[test]
+    fn android_id_groovy_bare_double_quotes() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[Marker::file_with(
+                "app/build.gradle",
+                "android {\n    defaultConfig {\n        applicationId \"com.example.groovy\"\n    }\n}\n",
+            )],
+        );
+        assert_eq!(
+            detect_android_id(tmp.path()),
+            Some("com.example.groovy".to_string())
+        );
+    }
+
+    // Kotlin DSL applicationId.set("...") form (common in some AGP/convention setups)
+    #[test]
+    fn android_id_kts_set_call() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[Marker::file_with(
+                "app/build.gradle.kts",
+                "android {\n    defaultConfig {\n        applicationId.set(\"com.example.set\")\n    }\n}\n",
+            )],
+        );
+        assert_eq!(
+            detect_android_id(tmp.path()),
+            Some("com.example.set".to_string())
+        );
+    }
+
+    // Detect works when starting inside an android/ subdir that is the Gradle root
+    // (pure Android project layout where cwd == the dir containing app/)
+    #[test]
+    fn android_id_detect_from_android_subdir_as_gradle_root() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[Marker::file_with(
+                "android/app/build.gradle.kts",
+                "android {\n    defaultConfig {\n        applicationId = \"com.example.subdir\"\n    }\n}\n",
+            )],
+        );
+        let start = tmp.path().join("android");
+        let info = AppDetector::new().detect(&start);
+        assert_eq!(info.project_type, ProjectType::Android);
+        assert_eq!(
+            info.android_package_id,
+            Some("com.example.subdir".to_string())
         );
     }
 
