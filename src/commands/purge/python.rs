@@ -2,7 +2,7 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 
 use crate::commands::purge::PurgeArgs;
-use crate::commands::purge::common::{self, delete_path_verbose};
+use crate::commands::purge::common::{self, delete_entry, EntryKind};
 use crate::logger::Logger;
 
 /// Max recursion depth for the project-local walk. Mirrors the detector's
@@ -41,13 +41,27 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     // Root-only `.coverage` file.
     let coverage = root.join(".coverage");
     if coverage.exists() {
-        delete_file_or_dir(&coverage, "python", dry_run, verbose, &logger);
+        delete_entry(
+            &coverage,
+            Some("python"),
+            EntryKind::File,
+            dry_run,
+            verbose,
+            &logger,
+        );
     }
 
     // Root-only `htmlcov/` directory.
     let htmlcov = root.join("htmlcov");
     if htmlcov.exists() {
-        delete_file_or_dir(&htmlcov, "python", dry_run, verbose, &logger);
+        delete_entry(
+            &htmlcov,
+            Some("python"),
+            EntryKind::Dir,
+            dry_run,
+            verbose,
+            &logger,
+        );
     }
 
     // Django-only: presence of `manage.py` at the root marks this as Django,
@@ -55,7 +69,14 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     if root.join("manage.py").exists() {
         let staticfiles = root.join("staticfiles");
         if staticfiles.exists() {
-            delete_file_or_dir(&staticfiles, "django", dry_run, verbose, &logger);
+            delete_entry(
+                &staticfiles,
+                Some("django"),
+                EntryKind::Dir,
+                dry_run,
+                verbose,
+                &logger,
+            );
         }
     }
 }
@@ -94,7 +115,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
 
     if dry_run {
         for p in &existing {
-            logger.detail(&format!("  {} [python] would delete {}", "~".cyan(), p.display()));
+            delete_entry(p, Some("python"), EntryKind::Dir, true, verbose, &logger);
         }
         return;
     }
@@ -104,7 +125,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     }
 
     for p in &existing {
-        delete_path_verbose(p, verbose, &logger);
+        delete_entry(p, Some("python"), EntryKind::Dir, false, verbose, &logger);
     }
 }
 
@@ -122,17 +143,13 @@ pub fn run_venv(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
         }
 
         if dry_run {
-            logger.detail(&format!(
-                "  {} [python] would delete {}",
-                "~".cyan(),
-                p.display()
-            ));
+            delete_entry(&p, Some("python"), EntryKind::Dir, true, verbose, &logger);
             continue;
         }
 
         let prompt = format!("  Delete {} ?", p.display());
         if common::confirm(&logger, &prompt, false) {
-            delete_path_verbose(&p, verbose, &logger);
+            delete_entry(&p, Some("python"), EntryKind::Dir, false, verbose, &logger);
         }
     }
 }
@@ -189,60 +206,19 @@ fn walk_inner(
         }
 
         if dir_names.contains(&name) {
-            delete_file_or_dir(&path, "python", dry_run, verbose, logger);
+            delete_entry(
+                &path,
+                Some("python"),
+                EntryKind::Dir,
+                dry_run,
+                verbose,
+                logger,
+            );
             // Don't descend into a directory we just deleted (or queued for delete).
             continue;
         }
 
         walk_inner(&path, dir_names, depth + 1, dry_run, verbose, logger);
-    }
-}
-
-/// Delete a file or directory, with a `[tag] would delete <path>` line in
-/// dry-run mode. `tag` is `"python"` for generic Python artifacts and
-/// `"django"` for Django-specific ones.
-fn delete_file_or_dir(
-    path: &Path,
-    tag: &str,
-    dry_run: bool,
-    verbose: bool,
-    logger: &Logger,
-) {
-    if dry_run {
-        logger.detail(&format!(
-            "  {} [{}] would delete {}",
-            "~".cyan(),
-            tag,
-            path.display()
-        ));
-        return;
-    }
-
-    let result = if path.is_dir() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-
-    match result {
-        Ok(_) => logger.success(&format!(
-            "  {} [{}] Deleted {}",
-            "✓".green(),
-            tag,
-            path.display()
-        )),
-        Err(e) => {
-            logger.err(&format!(
-                "  {} [{}] Failed to delete {}: {}",
-                "✗".red(),
-                tag,
-                path.display(),
-                e
-            ));
-            if verbose {
-                logger.err(&e.to_string());
-            }
-        }
     }
 }
 

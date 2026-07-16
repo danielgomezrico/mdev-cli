@@ -2,7 +2,7 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 
 use crate::commands::purge::PurgeArgs;
-use crate::commands::purge::common::{self, delete_path_verbose};
+use crate::commands::purge::common::{self, delete_entry, EntryKind};
 use crate::logger::Logger;
 
 /// Per-project Ruby/Rails cleanup.
@@ -16,7 +16,7 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     // Always-on Ruby paths.
     let ruby_paths: [PathBuf; 2] = [root.join("vendor").join("bundle"), root.join(".bundle")];
     for p in &ruby_paths {
-        clean_path(p, "ruby", dry_run, verbose, &logger);
+        delete_entry(p, Some("ruby"), EntryKind::Dir, dry_run, verbose, &logger);
     }
 
     // Rails-only extras.
@@ -26,7 +26,14 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     }
 
     let tmp_cache = root.join("tmp").join("cache");
-    clean_path(&tmp_cache, "rails", dry_run, verbose, &logger);
+    delete_entry(
+        &tmp_cache,
+        Some("rails"),
+        EntryKind::Dir,
+        dry_run,
+        verbose,
+        &logger,
+    );
 
     // Rotate Rails logs: every `log/*.log`. Skip the whole block if `log/`
     // is absent so we don't print noise.
@@ -48,7 +55,14 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
         if path.extension().and_then(|s| s.to_str()) != Some("log") {
             continue;
         }
-        clean_file(&path, "rails", dry_run, verbose, &logger);
+        delete_entry(
+            &path,
+            Some("rails"),
+            EntryKind::File,
+            dry_run,
+            verbose,
+            &logger,
+        );
     }
 }
 
@@ -85,70 +99,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     }
 
     for p in &existing {
-        delete_path_verbose(p, verbose, &logger);
-    }
-}
-
-/// Delete a directory at `path`, prefixing log lines with `[ruby]` or
-/// `[rails]`. Silently skips when the path is missing.
-fn clean_path(path: &Path, tag: &str, dry_run: bool, verbose: bool, logger: &Logger) {
-    if !path.exists() {
-        return;
-    }
-    if dry_run {
-        logger.detail(&format!("  [{}] would delete {}", tag, path.display()));
-        return;
-    }
-    match std::fs::remove_dir_all(path) {
-        Ok(_) => logger.success(&format!(
-            "  [{}] {} Deleted {}",
-            tag,
-            "✓".green(),
-            path.display()
-        )),
-        Err(e) => {
-            logger.err(&format!(
-                "  [{}] {} Failed to delete {}: {}",
-                tag,
-                "✗".red(),
-                path.display(),
-                e
-            ));
-            if verbose {
-                logger.err(&e.to_string());
-            }
-        }
-    }
-}
-
-/// Delete a single file. Same `[ruby]` / `[rails]` log prefix convention.
-fn clean_file(path: &Path, tag: &str, dry_run: bool, verbose: bool, logger: &Logger) {
-    if !path.exists() {
-        return;
-    }
-    if dry_run {
-        logger.detail(&format!("  [{}] would delete {}", tag, path.display()));
-        return;
-    }
-    match std::fs::remove_file(path) {
-        Ok(_) => logger.success(&format!(
-            "  [{}] {} Deleted {}",
-            tag,
-            "✓".green(),
-            path.display()
-        )),
-        Err(e) => {
-            logger.err(&format!(
-                "  [{}] {} Failed to delete {}: {}",
-                tag,
-                "✗".red(),
-                path.display(),
-                e
-            ));
-            if verbose {
-                logger.err(&e.to_string());
-            }
-        }
+        delete_entry(p, Some("ruby"), EntryKind::Dir, false, verbose, &logger);
     }
 }
 

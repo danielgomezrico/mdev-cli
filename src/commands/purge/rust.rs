@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::PurgeArgs;
-use super::common;
+use super::common::{self, delete_entry, EntryKind};
 use crate::logger::Logger;
 
 /// Per-project Rust/Cargo cleanup.
@@ -11,9 +11,7 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
     let paths: [PathBuf; 1] = [root.join("target")];
     for path in &paths {
-        if path.exists() {
-            delete(path, dry_run, verbose, &logger);
-        }
+        delete_entry(path, Some("rust"), EntryKind::Dir, dry_run, verbose, &logger);
     }
 }
 
@@ -40,7 +38,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
 
     if dry_run {
         for p in &existing {
-            logger.info(&format!("[rust] would delete {}", p.display()));
+            delete_entry(p, Some("rust"), EntryKind::Dir, true, verbose, &logger);
         }
         return;
     }
@@ -50,23 +48,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     }
 
     for p in &existing {
-        delete(p, dry_run, verbose, &logger);
-    }
-}
-
-fn delete(path: &Path, dry_run: bool, verbose: bool, logger: &Logger) {
-    if dry_run {
-        logger.info(&format!("[rust] would delete {}", path.display()));
-        return;
-    }
-    match std::fs::remove_dir_all(path) {
-        Ok(_) => logger.success(&format!("[rust] deleted {}", path.display())),
-        Err(e) => {
-            logger.err(&format!("[rust] failed to delete {}: {}", path.display(), e));
-            if verbose {
-                logger.err(&e.to_string());
-            }
-        }
+        delete_entry(p, Some("rust"), EntryKind::Dir, false, verbose, &logger);
     }
 }
 
@@ -77,7 +59,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn args() -> PurgeArgs {
-        PurgeArgs { dry_run: true, ..Default::default() }
+        PurgeArgs {
+            dry_run: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -86,7 +71,6 @@ mod tests {
         let root = tmp.path();
         let target = root.join("target");
         fs::create_dir_all(target.join("debug")).unwrap();
-        // also drop a sentinel file inside.
         let sentinel = target.join("debug").join("placeholder");
         fs::write(&sentinel, b"x").unwrap();
 
