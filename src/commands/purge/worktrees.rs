@@ -2,6 +2,7 @@ use colored::Colorize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use super::common::{delete_existing_with_confirm, existing_paths};
 use super::PurgeArgs;
 use crate::logger::Logger;
 use crate::runner::Runner;
@@ -27,8 +28,9 @@ struct Worktree {
 /// 1. Linked worktrees from `git worktree list --porcelain` (main/locked/bare excluded)
 /// 2. Convention-named folders under `root` (iterative FS walk)
 ///
-/// Removal is git-gated only: `git worktree remove --force` for porcelain-removable
-/// paths. FS-only matches are listed but not deleted (no free-form `rm -rf`).
+/// Removal (each default-No confirm):
+/// - Git-registered: `git worktree remove --force`
+/// - FS-only: `remove_dir_all` on pruned top-level paths (children covered by parents)
 ///
 /// Git-gated: a no-op when `git` is not on PATH.
 pub fn run(_args: &PurgeArgs, root: &Path, runner: &dyn Runner, dry_run: bool, verbose: bool) {
@@ -55,85 +57,76 @@ pub fn run(_args: &PurgeArgs, root: &Path, runner: &dyn Runner, dry_run: bool, v
         .collect();
 
     let fs_candidates = discover_worktree_folders(root);
+    let (_, fs_only) = union_targets(&git_targets, &fs_candidates);
 
-    let (union, fs_only) = union_targets(&git_targets, &fs_candidates);
-    if union.is_empty() {
-        return;
-    }
-
-    logger.info(&format!("  {} worktree target(s) found:", "git".cyan()));
-    for p in &union {
-        let tag = if fs_only.iter().any(|f| paths_equal(f, p)) {
-            " (fs-only, not git-registered)"
-        } else {
-            ""
-        };
-        logger.info(&format!("    {}{}", p.display(), tag));
-    }
-
-    if dry_run {
-        if !fs_only.is_empty() {
-            logger.detail(&format!(
-                "  ({} fs-only candidate(s) listed; delete only via git when registered)",
-                fs_only.len()
-            ));
-        }
-        logger.detail("  (dry run — skipped)");
-        return;
-    }
-
-    if git_targets.is_empty() {
-        if !fs_only.is_empty() {
-            logger.detail(&format!(
-                "  {} fs-only worktree-like folder(s) — skipped (not git-registered; no free rm)",
-                fs_only.len()
-            ));
-        }
-        return;
-    }
-
-    if !logger.confirm(
-        &format!("  Delete {} linked worktree(s)?", git_targets.len()),
-        false,
-    ) {
-        return;
-    }
-
-    for path in &git_targets {
-        let path_str = path.to_string_lossy();
-        let removed = runner.run(
-            "git",
-            &["-C", &root_str, "worktree", "remove", "--force", &path_str],
-            None,
-        );
-        if removed.is_success() {
-            logger.success(&format!("  {} Removed {}", "✓".green(), path.display()));
-        } else {
-            logger.err(&format!(
-                "  {} Failed to remove {}: {}",
-                "✗".red(),
-                path.display(),
-                removed.stderr
-            ));
-            if verbose && !removed.stderr.is_empty() {
-                logger.err(&removed.stderr);
-            }
-        }
-    }
-
-    if !fs_only.is_empty() {
-        logger.detail(&format!(
-            "  {} fs-only worktree-like folder(s) left listed but not deleted",
-            fs_only.len()
+    // Batch 1 — git-registered linked worktrees
+    if !git_targets.is_empty() {
+        logger.info(&format!(
+            "  {} linked worktree(s) (git-registered):",
+            git_targets.len().to_string().cyan()
         ));
-        if verbose {
-            for p in &fs_only {
-                logger.detail(&format!("    skip: {}", p.display()));
+        for p in &git_targets {
+            logger.info(&format!("    {}", p.display()));
+        }
+        if dry_run {
+            logger.detail(&format!(
+                "  (dry run — would remove {} via git worktree remove)",
+                git_targets.len()
+            ));
+        } else if logger.confirm(
+            &format!("  Delete {} linked worktree(s)?", git_targets.len()),
+            false,
+        ) {
+            for path in &git_targets {
+                let path_str = path.to_string_lossy();
+                let removed = runner.run(
+                    "git",
+                    &["-C", &root_str, "worktree", "remove", "--force", &path_str],
+                    None,
+                );
+                if removed.is_success() {
+                    logger.success(&format!("  {} Removed {}", "✓".green(), path.display()));
+                } else {
+                    logger.err(&format!(
+                        "  {} Failed to remove {}: {}",
+                        "✗".red(),
+                        path.display(),
+                        removed.stderr
+                    ));
+                    if verbose && !removed.stderr.is_empty() {
+                        logger.err(&removed.stderr);
+                    }
+                }
             }
+            runner.run("git", &["-C", &root_str, "worktree", "prune"], None);
         }
     }
 
-    runner.run("git", &["-C", &root_str, "worktree", "prune"], None);
+    // Batch 2 — fs-only convention folders (not in git worktree list)
+    if !fs_only.is_empty() {
+        let pruned = prune_covered_descendants(&fs_only);
+        let existing = existing_paths(&pruned);
+        if !existing.is_empty() {
+            logger.info(&format!(
+                "  {} fs-only worktree-like folder(s) (not git-registered):",
+                existing.len().to_string().cyan()
+            ));
+            for p in &existing {
+                logger.info(&format!("    {}", p.display()));
+            }
+            delete_existing_with_confirm(
+                &existing,
+                dry_run,
+                verbose,
+                &logger,
+                Some("fs-worktree"),
+                &format!(
+                    "  Delete {} fs-only worktree-like folder(s)?",
+                    existing.len()
+                ),
+            );
+        }
+    }
 }
 
 /// Parse `git worktree list --porcelain`. Blocks are separated by blank lines;
@@ -313,8 +306,18 @@ fn path_key(p: &Path) -> String {
     p.to_string_lossy().trim_end_matches('/').to_string()
 }
 
-fn paths_equal(a: &Path, b: &Path) -> bool {
-    path_key(a) == path_key(b)
+/// Keep shallowest ancestors only — a parent wipe covers nested children.
+fn prune_covered_descendants(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut sorted: Vec<PathBuf> = paths.to_vec();
+    sorted.sort();
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in sorted {
+        if out.iter().any(|parent| p.starts_with(parent)) {
+            continue;
+        }
+        out.push(p);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -587,5 +590,45 @@ branch refs/heads/dirty
     fn max_depth_constant_is_bounded() {
         assert!(MAX_DEPTH <= 4);
         assert!(MAX_DEPTH >= 1);
+    }
+
+    #[test]
+    fn prune_covered_descendants_keeps_shallowest() {
+        let paths = vec![
+            PathBuf::from("/repo/.agents/worktree/child-a"),
+            PathBuf::from("/repo/.agents/worktree"),
+            PathBuf::from("/repo/.claude/worktrees/agent-1"),
+            PathBuf::from("/repo/.claude/worktrees"),
+            PathBuf::from("/repo/worktrees/feature"),
+            PathBuf::from("/repo/orphan-worktree"),
+        ];
+        let got = prune_covered_descendants(&paths);
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("/repo/.agents/worktree"),
+                PathBuf::from("/repo/.claude/worktrees"),
+                PathBuf::from("/repo/orphan-worktree"),
+                PathBuf::from("/repo/worktrees/feature"),
+            ]
+        );
+    }
+
+    #[test]
+    fn prune_does_not_collapse_sibling_prefixes() {
+        // component-wise starts_with: worktree is not a prefix of worktrees
+        let paths = vec![
+            PathBuf::from("/repo/worktree"),
+            PathBuf::from("/repo/worktrees"),
+            PathBuf::from("/repo/worktrees/feature"),
+        ];
+        let got = prune_covered_descendants(&paths);
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("/repo/worktree"),
+                PathBuf::from("/repo/worktrees"),
+            ]
+        );
     }
 }

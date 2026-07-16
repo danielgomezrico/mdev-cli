@@ -64,7 +64,12 @@ The scanner lists each match with its size and a total, then prompts once before
 
 ### Git worktrees
 
-When `git` is on your `PATH`, `mdev purge` also lists the **linked** git worktrees of every detected repo and offers to remove them — each via `git worktree remove --force`, which deletes both the worktree's admin files and its working directory. The repo's main working tree and any **locked** worktree are always skipped. It prompts `Delete N linked worktree(s)?` defaulting to **No**, and in `--dry-run` it only lists what it would remove. If `git` is unavailable, this step is a no-op.
+When `git` is on your `PATH`, `mdev purge` offers worktree cleanup in **two separate batches** per detected repo (each list + confirm, default **No**):
+
+1. **Git-registered** linked worktrees (`git worktree list`) — `git worktree remove --force`. Main and **locked** worktrees are always skipped.
+2. **FS-only** convention folders (e.g. `.worktree/`, `.claude/worktrees/`, `worktrees/feature`) not in git's list — confirm-gated free-form delete. Nested children under a listed parent are collapsed so one wipe covers the tree.
+
+In `--dry-run` both batches are listed only. If `git` is unavailable, this step is a no-op.
 
 ## Installation
 
