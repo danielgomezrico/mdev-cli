@@ -202,4 +202,51 @@ mod tests {
         delete_paths(&[a.clone(), b.clone()], true, false, &logger);
         assert!(a.exists() && b.exists());
     }
+
+    // --- TDD harden R1: kind/path mismatches must not clobber ---
+
+    #[test]
+    fn kind_dir_on_file_leaves_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("notadir");
+        fs::write(&f, b"data").unwrap();
+        let logger = Logger::new();
+        delete_entry(&f, None, EntryKind::Dir, false, false, &logger);
+        assert!(f.exists(), "Dir kind on file must not remove the file");
+        assert_eq!(fs::read(&f).unwrap(), b"data");
+    }
+
+    #[test]
+    fn kind_file_on_dir_leaves_dir() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path().join("adir");
+        fs::create_dir_all(d.join("nested")).unwrap();
+        let logger = Logger::new();
+        delete_entry(&d, None, EntryKind::File, false, false, &logger);
+        assert!(d.exists(), "File kind on dir must not remove the directory");
+        assert!(d.join("nested").exists());
+    }
+
+    // --- TDD harden R2: Auto + nested + empty dir ---
+
+    #[test]
+    fn auto_removes_nested_tree() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("tree");
+        fs::create_dir_all(root.join("a").join("b")).unwrap();
+        fs::write(root.join("a").join("b").join("c.txt"), b"x").unwrap();
+        let logger = Logger::new();
+        delete_entry(&root, Some("t"), EntryKind::Auto, false, false, &logger);
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn auto_removes_empty_dir() {
+        let tmp = TempDir::new().unwrap();
+        let d = tmp.path().join("empty");
+        fs::create_dir_all(&d).unwrap();
+        let logger = Logger::new();
+        delete_entry(&d, None, EntryKind::Auto, false, false, &logger);
+        assert!(!d.exists());
+    }
 }
