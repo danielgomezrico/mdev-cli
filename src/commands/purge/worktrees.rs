@@ -186,22 +186,7 @@ fn is_multi_worktree_parent(name: &str, rel: &Path) -> bool {
 
 /// Heavy / owned dirs — never descend.
 fn is_skip_dir(name: &str) -> bool {
-    matches!(
-        name,
-        "node_modules"
-            | ".git"
-            | "target"
-            | "build"
-            | "dist"
-            | "vendor"
-            | ".dart_tool"
-            | "Pods"
-            | "DerivedData"
-            | ".venv"
-            | "venv"
-            | "__pycache__"
-            | ".gradle"
-    )
+    super::common::is_heavy_or_owned_dir(name)
 }
 
 /// Iterative BFS walk under `root` for convention worktree folders.

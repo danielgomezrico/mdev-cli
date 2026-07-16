@@ -54,38 +54,27 @@ fn is_extra_dir(name: &str) -> bool {
 /// Directories that other cleaners own — skip them during the walk so we
 /// don't double-account paths that the ecosystem cleaner is about to remove.
 fn is_skip_dir(name: &str) -> bool {
-    matches!(
-        name,
-        ".git"
-            | "node_modules"
-            | "target"
-            | "build"
-            | ".dart_tool"
-            | ".next"
-            | ".nuxt"
-            | ".turbo"
-            | ".vite"
-            | ".parcel-cache"
-            | "dist"
-            | "Pods"
-            | "DerivedData"
-            | ".venv"
-            | "venv"
-            | "env"
-            | ".tox"
-            | "__pycache__"
-            | ".pytest_cache"
-            | ".mypy_cache"
-            | ".ruff_cache"
-            | "vendor"
-            | ".bundle"
-            | ".svelte-kit"
-            | ".astro"
-            | "coverage"
-            | "htmlcov"
-            | "staticfiles"
-            | ".gradle"
-    )
+    use super::common::is_heavy_or_owned_dir;
+    is_heavy_or_owned_dir(name)
+        || matches!(
+            name,
+            ".next"
+                | ".nuxt"
+                | ".turbo"
+                | ".vite"
+                | ".parcel-cache"
+                | "env"
+                | ".tox"
+                | ".pytest_cache"
+                | ".mypy_cache"
+                | ".ruff_cache"
+                | ".bundle"
+                | ".svelte-kit"
+                | ".astro"
+                | "coverage"
+                | "htmlcov"
+                | "staticfiles"
+        )
 }
 
 const MAX_DEPTH: usize = 6;

@@ -11,15 +11,9 @@ use crate::logger::Logger;
 /// search depth so we stay bounded even on pathological trees.
 const MAX_DEPTH: usize = 10;
 
-/// Directory names we never recurse into when walking a Python project.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    "node_modules",
-    ".venv",
-    "venv",
-    "env",
-    "target",
-];
+/// Extra names beyond `common::is_heavy_or_owned_dir` that the Python walk
+/// must not descend into (`env` is a common non-venv folder name).
+const SKIP_DIRS_EXTRA: &[&str] = &["env"];
 
 /// Cache directory names we collect (and later delete) at any depth.
 const PY_CACHE_DIRS: &[&str] = &[
@@ -197,7 +191,7 @@ fn walk_inner(
             None => continue,
         };
 
-        if SKIP_DIRS.contains(&name) {
+        if common::is_heavy_or_owned_dir(name) || SKIP_DIRS_EXTRA.contains(&name) {
             continue;
         }
 

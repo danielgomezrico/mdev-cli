@@ -21,6 +21,29 @@ pub fn confirm(logger: &Logger, msg: &str, default_value: bool) -> bool {
     logger.confirm(msg, default_value)
 }
 
+/// Shared skip set for purge FS walks: dependency/build/VCS trees that other
+/// cleaners own or that never host sibling artifacts we should descend into.
+///
+/// Module-specific walks may OR in extra names (e.g. extras frontend caches).
+pub fn is_heavy_or_owned_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "node_modules"
+            | ".git"
+            | "target"
+            | "build"
+            | "dist"
+            | "vendor"
+            | ".dart_tool"
+            | "Pods"
+            | "DerivedData"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | ".gradle"
+    )
+}
+
 /// How to remove a path: directory tree, single file, or auto-detect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -328,4 +351,15 @@ mod tests {
         let n = delete_existing_with_confirm(&[], false, false, &logger, None, "x");
         assert_eq!(n, 0);
     }
+
+    #[test]
+    fn heavy_or_owned_dir_core_names() {
+        for n in ["node_modules", ".git", "target", "__pycache__", ".venv"] {
+            assert!(is_heavy_or_owned_dir(n), "{n}");
+        }
+        for n in ["src", "lib", "worktree", "feature-worktree"] {
+            assert!(!is_heavy_or_owned_dir(n), "{n}");
+        }
+    }
 }
+
