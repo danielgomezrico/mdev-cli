@@ -20,7 +20,7 @@ pub mod python;
 pub mod extras;
 pub mod worktrees;
 
-use common::delete_path_verbose;
+use common::{delete_path_verbose, select_paths_to_delete};
 
 /// Discover every project under `start_dir` for purge — downward only, with
 /// nested-path deduplication (a child repo is not listed separately when its
@@ -283,7 +283,11 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         global_paths.push(home.join("Library").join("Caches").join("CocoaPods"));
     }
 
-    let existing_globals: Vec<&PathBuf> = global_paths.iter().filter(|p| p.exists()).collect();
+    let existing_globals: Vec<&Path> = global_paths
+        .iter()
+        .filter(|p| p.exists())
+        .map(PathBuf::as_path)
+        .collect();
 
     if !existing_globals.is_empty() {
         logger.info(&format!("\n{}", "Global caches to delete:".cyan()));
@@ -291,62 +295,29 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
             logger.info(&format!("  {}", p.display()));
         }
 
-        let confirmed = args.dry_run || logger.confirm("  Delete global caches?", false);
-
-        if confirmed && !args.dry_run {
-            if do_pub {
-                // Try flutter pub cache clean -f first
-                let clean_result = runner.run("flutter", &["pub", "cache", "clean", "-f"], None);
-                if !clean_result.is_success() {
-                    let pub_cache = home.join(".pub-cache");
-                    if pub_cache.exists() {
-                        match std::fs::remove_dir_all(&pub_cache) {
-                            Ok(_) => logger.success(&format!(
-                                "  {} Deleted {}",
-                                "✓".green(),
-                                pub_cache.display()
-                            )),
-                            Err(e) => logger.err(&format!(
-                                "  {} Failed to delete {}: {}",
-                                "✗".red(),
-                                pub_cache.display(),
-                                e
-                            )),
-                        }
+        if args.dry_run {
+            logger.detail("  (dry run — skipped)");
+        } else {
+            let selected = select_paths_to_delete(
+                &existing_globals,
+                &logger,
+                "  Delete global caches?",
+            );
+            let pub_cache = home.join(".pub-cache");
+            for p in selected {
+                if p == pub_cache.as_path() {
+                    // Prefer flutter's own cleaner; fall back to rm.
+                    let clean_result =
+                        runner.run("flutter", &["pub", "cache", "clean", "-f"], None);
+                    if clean_result.is_success() {
+                        logger.success(&format!("  {} pub cache cleaned", "✓".green()));
+                    } else {
+                        delete_path_verbose(p, args.verbose, &logger);
                     }
                 } else {
-                    logger.success(&format!("  {} pub cache cleaned", "✓".green()));
-                }
-            }
-            if do_flutter_sdk {
-                for p in &flutter_sdk_caches {
                     delete_path_verbose(p, args.verbose, &logger);
                 }
             }
-            if do_gradle {
-                for p in &[
-                    gradle_home.join("caches"),
-                    gradle_home.join("wrapper").join("dists"),
-                    gradle_home.join("daemon"),
-                    home.join(".kotlin"),
-                ] {
-                    delete_path_verbose(p, args.verbose, &logger);
-                }
-            }
-            if do_derived_data {
-                let p = home
-                    .join("Library")
-                    .join("Developer")
-                    .join("Xcode")
-                    .join("DerivedData");
-                delete_path_verbose(&p, args.verbose, &logger);
-            }
-            if do_pod_cache {
-                let p = home.join("Library").join("Caches").join("CocoaPods");
-                delete_path_verbose(&p, args.verbose, &logger);
-            }
-        } else if args.dry_run {
-            logger.detail("  (dry run — skipped)");
         }
     }
 

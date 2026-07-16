@@ -1,5 +1,5 @@
 use colored::Colorize;
-use dialoguer::{Confirm, Input, Password};
+use dialoguer::{Confirm, Input, Password, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
@@ -50,6 +50,20 @@ impl Logger {
             .default(default_value)
             .interact()
             .unwrap_or(default_value)
+    }
+
+    /// Interactive single-choice menu. Returns selected index; on failure, `default`.
+    pub fn select(&self, msg: &str, items: &[&str], default: usize) -> usize {
+        if items.is_empty() {
+            return 0;
+        }
+        let default = default.min(items.len() - 1);
+        Select::new()
+            .with_prompt(msg)
+            .items(items)
+            .default(default)
+            .interact()
+            .unwrap_or(default)
     }
 
     /// Returns a spinner progress bar. Caller is responsible for finishing it.

@@ -75,8 +75,45 @@ pub fn existing_paths(candidates: &[PathBuf]) -> Vec<&Path> {
         .collect()
 }
 
-/// Global-cache flow: dry-run lists via `delete_entry`, else one default-No
-/// confirm then bulk delete. Callers log headers; this owns the gate + remove.
+/// Scope for multi-path delete prompts: skip all, wipe all, or pick per path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteScope {
+    None,
+    All,
+    Some,
+}
+
+/// Prompt All / Some / None (default None). Used for global cache batches.
+pub fn prompt_delete_scope(logger: &Logger, msg: &str) -> DeleteScope {
+    match logger.select(msg, &["None", "All", "Some (confirm each)"], 0) {
+        1 => DeleteScope::All,
+        2 => DeleteScope::Some,
+        _ => DeleteScope::None,
+    }
+}
+
+/// Resolve which paths to delete. `Some` confirms each path (default No).
+pub fn select_paths_to_delete<'a>(
+    existing: &[&'a Path],
+    logger: &Logger,
+    scope_prompt: &str,
+) -> Vec<&'a Path> {
+    if existing.is_empty() {
+        return vec![];
+    }
+    match prompt_delete_scope(logger, scope_prompt) {
+        DeleteScope::None => vec![],
+        DeleteScope::All => existing.to_vec(),
+        DeleteScope::Some => existing
+            .iter()
+            .copied()
+            .filter(|p| confirm(logger, &format!("  Delete {}?", p.display()), false))
+            .collect(),
+    }
+}
+
+/// Global-cache flow: dry-run lists via `delete_entry`, else All/Some/None then
+/// delete selected paths. Callers log headers; this owns the gate + remove.
 ///
 /// Returns the number of paths dry-run listed or deleted (0 if empty or cancel).
 pub fn delete_existing_with_confirm(
@@ -96,13 +133,11 @@ pub fn delete_existing_with_confirm(
         }
         return existing.len();
     }
-    if !confirm(logger, confirm_msg, false) {
-        return 0;
-    }
-    for p in existing {
+    let selected = select_paths_to_delete(existing, logger, confirm_msg);
+    for p in &selected {
         delete_entry(p, tag, EntryKind::Dir, false, verbose, logger);
     }
-    existing.len()
+    selected.len()
 }
 
 /// Single entry-point for dry-run-aware file/dir deletion used by purge modules.
@@ -350,6 +385,20 @@ mod tests {
         let logger = Logger::new();
         let n = delete_existing_with_confirm(&[], false, false, &logger, None, "x");
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn select_paths_empty_is_empty() {
+        let logger = Logger::new();
+        let got = select_paths_to_delete(&[], &logger, "x");
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn delete_scope_variants_distinct() {
+        assert_ne!(DeleteScope::None, DeleteScope::All);
+        assert_ne!(DeleteScope::All, DeleteScope::Some);
+        assert_ne!(DeleteScope::None, DeleteScope::Some);
     }
 
     #[test]

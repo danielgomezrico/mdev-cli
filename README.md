@@ -32,7 +32,7 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 
 ## Supported ecosystems
 
-`mdev purge` auto-detects projects in the current directory (recursing into subdirectories up to 6 levels deep, so workspace layouts like `~/projects/<group>/<repo>` are all found) and applies per-ecosystem cleaners. Global caches are gated behind explicit `--<eco>-global` flags and prompt for confirmation before deletion.
+`mdev purge` auto-detects projects in the current directory (recursing into subdirectories up to 6 levels deep, so workspace layouts like `~/projects/<group>/<repo>` are all found) and applies per-ecosystem cleaners. Global caches list existing paths then prompt **None / All / Some (confirm each)** so you can wipe everything or pick individually (default **None**). Extra ecosystems (`--node-global`, `--rust-global`, …) use the same All/Some/None gate.
 
 | Ecosystem | Anchor file(s) | Per-project paths | Global (gated) |
 |---|---|---|---|
