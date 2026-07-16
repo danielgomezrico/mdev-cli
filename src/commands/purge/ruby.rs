@@ -2,7 +2,9 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 
 use crate::commands::purge::PurgeArgs;
-use crate::commands::purge::common::{self, delete_entry, EntryKind};
+use crate::commands::purge::common::{
+    delete_entry, delete_existing_with_confirm, existing_paths, EntryKind,
+};
 use crate::logger::Logger;
 
 /// Per-project Ruby/Rails cleanup.
@@ -77,7 +79,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         home.join(".gem").join("cache"),
     ];
 
-    let existing: Vec<&PathBuf> = candidates.iter().filter(|p| p.exists()).collect();
+    let existing = existing_paths(&candidates);
     if existing.is_empty() {
         return;
     }
@@ -87,20 +89,14 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         logger.info(&format!("  [ruby] {}", p.display()));
     }
 
-    if dry_run {
-        for p in &existing {
-            logger.detail(&format!("  [ruby] would delete {}", p.display()));
-        }
-        return;
-    }
-
-    if !common::confirm(&logger, "  Delete Ruby global caches?", false) {
-        return;
-    }
-
-    for p in &existing {
-        delete_entry(p, Some("ruby"), EntryKind::Dir, false, verbose, &logger);
-    }
+    delete_existing_with_confirm(
+        &existing,
+        dry_run,
+        verbose,
+        &logger,
+        Some("ruby"),
+        "  Delete Ruby global caches?",
+    );
 }
 
 #[cfg(test)]

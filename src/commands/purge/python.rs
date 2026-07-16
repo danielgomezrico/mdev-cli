@@ -2,7 +2,9 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 
 use crate::commands::purge::PurgeArgs;
-use crate::commands::purge::common::{self, delete_entry, EntryKind};
+use crate::commands::purge::common::{
+    self, delete_entry, delete_existing_with_confirm, existing_paths, EntryKind,
+};
 use crate::logger::Logger;
 
 /// Max recursion depth for the project-local walk. Mirrors the detector's
@@ -103,7 +105,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     paths.push(home.join(".cache").join("uv"));
     paths.push(home.join(".local").join("share").join("virtualenvs"));
 
-    let existing: Vec<&PathBuf> = paths.iter().filter(|p| p.exists()).collect();
+    let existing = existing_paths(&paths);
     if existing.is_empty() {
         return;
     }
@@ -113,20 +115,14 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         logger.info(&format!("  {}", p.display()));
     }
 
-    if dry_run {
-        for p in &existing {
-            delete_entry(p, Some("python"), EntryKind::Dir, true, verbose, &logger);
-        }
-        return;
-    }
-
-    if !common::confirm(&logger, "  Delete global Python caches?", false) {
-        return;
-    }
-
-    for p in &existing {
-        delete_entry(p, Some("python"), EntryKind::Dir, false, verbose, &logger);
-    }
+    delete_existing_with_confirm(
+        &existing,
+        dry_run,
+        verbose,
+        &logger,
+        Some("python"),
+        "  Delete global Python caches?",
+    );
 }
 
 /// Per-project venv cleanup. Wired into the dispatcher in `mod.rs` behind

@@ -43,6 +43,45 @@ pub fn delete_path_verbose(path: &Path, verbose: bool, logger: &Logger) {
     delete_entry(path, None, EntryKind::Dir, false, verbose, logger);
 }
 
+/// Paths from `candidates` that currently exist on disk.
+pub fn existing_paths(candidates: &[PathBuf]) -> Vec<&Path> {
+    candidates
+        .iter()
+        .filter(|p| p.exists())
+        .map(PathBuf::as_path)
+        .collect()
+}
+
+/// Global-cache flow: dry-run lists via `delete_entry`, else one default-No
+/// confirm then bulk delete. Callers log headers; this owns the gate + remove.
+///
+/// Returns the number of paths dry-run listed or deleted (0 if empty or cancel).
+pub fn delete_existing_with_confirm(
+    existing: &[&Path],
+    dry_run: bool,
+    verbose: bool,
+    logger: &Logger,
+    tag: Option<&str>,
+    confirm_msg: &str,
+) -> usize {
+    if existing.is_empty() {
+        return 0;
+    }
+    if dry_run {
+        for p in existing {
+            delete_entry(p, tag, EntryKind::Dir, true, verbose, logger);
+        }
+        return existing.len();
+    }
+    if !confirm(logger, confirm_msg, false) {
+        return 0;
+    }
+    for p in existing {
+        delete_entry(p, tag, EntryKind::Dir, false, verbose, logger);
+    }
+    existing.len()
+}
+
 /// Single entry-point for dry-run-aware file/dir deletion used by purge modules.
 ///
 /// - Missing paths are no-ops.
@@ -248,5 +287,45 @@ mod tests {
         let logger = Logger::new();
         delete_entry(&d, None, EntryKind::Auto, false, false, &logger);
         assert!(!d.exists());
+    }
+
+    #[test]
+    fn existing_paths_filters_missing() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("missing");
+        fs::create_dir_all(&a).unwrap();
+        let cands = vec![a.clone(), b];
+        let got = existing_paths(&cands);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0], a.as_path());
+    }
+
+    #[test]
+    fn confirm_delete_dry_run_preserves_and_counts() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("a");
+        let b = tmp.path().join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let logger = Logger::new();
+        let existing = [a.as_path(), b.as_path()];
+        let n = delete_existing_with_confirm(
+            &existing,
+            true,
+            false,
+            &logger,
+            Some("t"),
+            "Delete?",
+        );
+        assert_eq!(n, 2);
+        assert!(a.exists() && b.exists());
+    }
+
+    #[test]
+    fn confirm_delete_empty_is_zero() {
+        let logger = Logger::new();
+        let n = delete_existing_with_confirm(&[], false, false, &logger, None, "x");
+        assert_eq!(n, 0);
     }
 }

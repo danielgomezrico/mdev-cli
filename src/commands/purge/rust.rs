@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::PurgeArgs;
-use super::common::{self, delete_entry, EntryKind};
+use super::common::{delete_entry, delete_existing_with_confirm, existing_paths, EntryKind};
 use crate::logger::Logger;
 
 /// Per-project Rust/Cargo cleanup.
@@ -26,7 +26,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         home.join(".cargo").join("git").join("db"),
     ];
 
-    let existing: Vec<&PathBuf> = candidates.iter().filter(|p| p.exists()).collect();
+    let existing = existing_paths(&candidates);
     if existing.is_empty() {
         return;
     }
@@ -36,20 +36,14 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         logger.info(&format!("  {}", p.display()));
     }
 
-    if dry_run {
-        for p in &existing {
-            delete_entry(p, Some("rust"), EntryKind::Dir, true, verbose, &logger);
-        }
-        return;
-    }
-
-    if !common::confirm(&logger, "Delete global Rust/Cargo caches?", false) {
-        return;
-    }
-
-    for p in &existing {
-        delete_entry(p, Some("rust"), EntryKind::Dir, false, verbose, &logger);
-    }
+    delete_existing_with_confirm(
+        &existing,
+        dry_run,
+        verbose,
+        &logger,
+        Some("rust"),
+        "Delete global Rust/Cargo caches?",
+    );
 }
 
 #[cfg(test)]
