@@ -7,9 +7,9 @@ mod runner;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use commands::{
-    clear::ClearArgs, completions::CompletionsArgs, doctor, emulator::EmulatorArgs,
-    keystore::KeystoreArgs, kill::KillArgs, purge::PurgeArgs, reboot::RebootArgs,
-    uninstall::UninstallArgs,
+    clear::ClearArgs, completions::CompletionsArgs, doall::DoallArgs, doctor,
+    emulator::EmulatorArgs, keystore::KeystoreArgs, kill::KillArgs, purge::PurgeArgs,
+    reboot::RebootArgs, uninstall::UninstallArgs,
 };
 use runner::ProcessRunner;
 
@@ -55,6 +55,9 @@ enum Commands {
     /// Check development environment
     #[command(visible_alias = "d")]
     Doctor,
+    /// Run a command in every immediate subfolder of a parent directory (in parallel)
+    #[command(visible_alias = "a")]
+    Doall(DoallArgs),
     /// Generate shell completion script (bash, zsh, fish, powershell, elvish)
     #[command(visible_alias = "s")]
     Completions(CompletionsArgs),
@@ -85,6 +88,7 @@ fn main() {
         Some(Commands::Keystore(ref args)) => commands::keystore::run(args, &runner),
         Some(Commands::Emulator(ref args)) => commands::emulator::run(args, &runner),
         Some(Commands::Doctor) => doctor::run(&runner),
+        Some(Commands::Doall(ref args)) => commands::doall::run(args),
         Some(Commands::Completions(ref args)) => commands::completions::run::<Cli>(args),
     };
 

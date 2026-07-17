@@ -28,6 +28,7 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 | `mdev emulator config` | `e c` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
 | `mdev emulator list` | `e l` | List known AVD config.ini tweaks |
 | `mdev doctor` | `d` | Check development environment (flutter, adb, java, xcode, etc.) |
+| `mdev doall` | `a` | Run a command in every immediate subfolder of a parent dir, in parallel |
 | `mdev completions` | `s` | Generate shell completion script |
 
 ## Supported ecosystems
@@ -133,6 +134,11 @@ mdev emulator config --avd Pixel_9
 
 # Check your dev environment
 mdev doctor
+
+# Run a command in every subfolder of the current dir (parallel)
+mdev doall git status
+mdev doall nexusindex
+mdev doall -C ~/projects gitnexus analyze --embeddings --index-only
 ```
 
 ## Shell completions
