@@ -1,9 +1,14 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use clap::Args;
 use colored::Colorize;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::logger::Logger;
 
@@ -52,43 +57,85 @@ pub fn run(args: &DoallArgs) -> i32 {
 
     let shell_cmd = join_shell_command(&args.command);
     let shell = std::env::var("SHELL").unwrap_or_else(|_| default_shell().to_string());
-
-    logger.info(&format!(
-        "{} {} folder(s) in parallel: {}",
-        "mdev doall".cyan().bold(),
-        subdirs.len(),
-        shell_cmd.dimmed()
-    ));
-
-    let handles: Vec<_> = subdirs
-        .into_iter()
-        .map(|dir| {
-            let shell = shell.clone();
-            let shell_cmd = shell_cmd.clone();
-            thread::spawn(move || run_in_dir(&shell, &shell_cmd, &dir))
+    let total = subdirs.len();
+    let names: Vec<String> = subdirs
+        .iter()
+        .map(|d| {
+            d.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| d.display().to_string())
         })
         .collect();
 
-    let mut any_fail = false;
-    for handle in handles {
-        match handle.join() {
-            Ok(result) => {
-                print_result(&result);
-                if result.exit_code != 0 {
-                    any_fail = true;
-                }
-            }
-            Err(_) => {
-                logger.err("Worker thread panicked");
-                any_fail = true;
-            }
-        }
+    logger.info(&format!(
+        "{} {} folder(s) {} in {} · {}",
+        "mdev doall".cyan().bold(),
+        total,
+        "in parallel".dimmed(),
+        parent.display().to_string().dimmed(),
+        shell_cmd.dimmed()
+    ));
+    for name in &names {
+        logger.detail(&format!("  · {name}"));
     }
 
-    if any_fail {
-        1
-    } else {
+    let pb = ProgressBar::new(total as u64);
+    pb.set_style(
+        ProgressStyle::with_template("{spinner:.cyan} [{bar:24.cyan/blue}] {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("█▓░")
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    pb.enable_steady_tick(Duration::from_millis(80));
+
+    // Folders still running — shared so the bar can show live in-flight names.
+    let running: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new(names.iter().cloned().collect()));
+    pb.set_message(format_running_msg(0, total, &running.lock().unwrap()));
+
+    let (tx, rx) = mpsc::channel::<DirResult>();
+    for dir in subdirs {
+        let shell = shell.clone();
+        let shell_cmd = shell_cmd.clone();
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let result = run_in_dir(&shell, &shell_cmd, &dir);
+            let _ = tx.send(result);
+        });
+    }
+    drop(tx);
+
+    let mut results = Vec::with_capacity(total);
+    let mut done = 0usize;
+    while let Ok(result) = rx.recv() {
+        done += 1;
+        {
+            let mut run = running.lock().unwrap();
+            run.remove(&result.name);
+            pb.set_position(done as u64);
+            pb.set_message(format_running_msg(done, total, &run));
+        }
+        // suspend so lines aren't eaten when the bar is hidden (non-TTY)
+        pb.suspend(|| {
+            println!("{}", format_result_line(&result));
+            print_result_body(&result);
+        });
+        results.push(result);
+    }
+    pb.finish_and_clear();
+
+    results.sort_by(|a, b| a.name.cmp(&b.name));
+    let failed: Vec<&DirResult> = results.iter().filter(|r| r.exit_code != 0).collect();
+    let ok_count = results.len() - failed.len();
+
+    if failed.is_empty() {
+        logger.success(&format!("── {ok_count}/{total} ok ──"));
         0
+    } else {
+        logger.err(&format!("── {ok_count}/{total} ok · {} failed ──", failed.len()));
+        for r in &failed {
+            logger.err(&format!("  ✗ {} (exit {})", r.name, r.exit_code));
+        }
+        1
     }
 }
 
@@ -127,17 +174,38 @@ fn run_in_dir(shell: &str, shell_cmd: &str, dir: &Path) -> DirResult {
     }
 }
 
-fn print_result(result: &DirResult) {
+fn format_running_msg(done: usize, total: usize, running: &BTreeSet<String>) -> String {
+    if running.is_empty() {
+        return format!("{done}/{total} complete");
+    }
+    let list = truncate_names(running, 4);
+    format!("{done}/{total} · running: {list}")
+}
+
+/// Show up to `max` names; remainder as "+N".
+fn truncate_names(names: &BTreeSet<String>, max: usize) -> String {
+    let n = names.len();
+    if n <= max {
+        return names.iter().cloned().collect::<Vec<_>>().join(", ");
+    }
+    let shown: Vec<_> = names.iter().take(max).cloned().collect();
+    format!("{}, +{}", shown.join(", "), n - max)
+}
+
+fn format_result_line(result: &DirResult) -> String {
     if result.exit_code == 0 {
-        println!("{} {}", "OK".green().bold(), result.name.green());
+        format!("{} {}", "OK".green().bold(), result.name.green())
     } else {
-        println!(
+        format!(
             "{} {} (exit {})",
             "FAIL".red().bold(),
             result.name.red(),
             result.exit_code
-        );
+        )
     }
+}
+
+fn print_result_body(result: &DirResult) {
     if !result.stdout.is_empty() {
         for line in result.stdout.lines() {
             println!("  {line}");
@@ -200,6 +268,22 @@ mod tests {
     use std::fs;
     use std::time::{Duration, Instant};
     use tempfile::tempdir;
+
+    #[test]
+    fn running_msg_lists_in_flight() {
+        let mut set = BTreeSet::new();
+        set.insert("a".into());
+        set.insert("b".into());
+        assert_eq!(format_running_msg(0, 2, &set), "0/2 · running: a, b");
+        set.clear();
+        assert_eq!(format_running_msg(2, 2, &set), "2/2 complete");
+    }
+
+    #[test]
+    fn truncate_names_adds_remainder() {
+        let set: BTreeSet<String> = ["a", "b", "c", "d", "e"].into_iter().map(String::from).collect();
+        assert_eq!(truncate_names(&set, 3), "a, b, c, +2");
+    }
 
     #[test]
     fn shell_quote_plain() {
