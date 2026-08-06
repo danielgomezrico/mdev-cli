@@ -25,6 +25,44 @@ pub fn keytool(runner: &dyn Runner) -> Option<String> {
 
 pub fn adb(runner: &dyn Runner) -> Option<String> {
     find(runner, "adb", "ANDROID_HOME", &["platform-tools"])
+        .or_else(|| in_sdk_root(&["platform-tools"], "adb"))
+}
+
+/// The emulator binary is looked up under the SDK root *before* `$PATH`: a stale
+/// `$SDK/tools/emulator` on the path panics with "Broken AVD system path".
+pub fn emulator(runner: &dyn Runner) -> Option<String> {
+    in_sdk_root(&["emulator"], "emulator")
+        .or_else(|| find(runner, "emulator", "ANDROID_HOME", &["emulator"]))
+}
+
+/// Android SDK root from `$ANDROID_HOME`, `$ANDROID_SDK_ROOT`, or the per-OS default.
+pub fn android_sdk_root() -> Option<PathBuf> {
+    for var in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
+        if let Ok(root) = std::env::var(var) {
+            if !root.is_empty() {
+                return Some(PathBuf::from(root));
+            }
+        }
+    }
+
+    let home = dirs::home_dir()?;
+    let default = if cfg!(target_os = "macos") {
+        home.join("Library").join("Android").join("sdk")
+    } else {
+        home.join("Android").join("Sdk")
+    };
+    default.exists().then_some(default)
+}
+
+fn in_sdk_root(subpath: &[&str], executable: &str) -> Option<String> {
+    let mut candidate = android_sdk_root()?;
+    for component in subpath {
+        candidate = candidate.join(component);
+    }
+    candidate = candidate.join(executable);
+    candidate
+        .exists()
+        .then(|| candidate.to_string_lossy().to_string())
 }
 
 #[cfg(test)]
@@ -80,10 +118,7 @@ mod tests {
 
         std::env::remove_var(env_var);
 
-        assert_eq!(
-            result,
-            Some(keytool_path.to_string_lossy().to_string())
-        );
+        assert_eq!(result, Some(keytool_path.to_string_lossy().to_string()));
     }
 
     // GUARD: env set but candidate file does not exist → None (`.exists()` guard)

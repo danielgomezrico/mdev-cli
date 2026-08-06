@@ -9,7 +9,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use commands::{
     clear::ClearArgs, completions::CompletionsArgs, doall::DoallArgs, doctor,
     emulator::EmulatorArgs, keystore::KeystoreArgs, kill::KillArgs, purge::PurgeArgs,
-    reboot::RebootArgs, uninstall::UninstallArgs,
+    reboot::RebootArgs, simulator::SimulatorArgs, uninstall::UninstallArgs,
 };
 use runner::ProcessRunner;
 
@@ -52,6 +52,9 @@ enum Commands {
     /// Manage Android AVD emulators (e.g. config tweaks)
     #[command(visible_alias = "e")]
     Emulator(EmulatorArgs),
+    /// Boot an iOS simulator or Android emulator
+    #[command(visible_alias = "sim")]
+    Simulator(SimulatorArgs),
     /// Check development environment
     #[command(visible_alias = "d")]
     Doctor,
@@ -87,6 +90,7 @@ fn main() {
         Some(Commands::Purge(ref args)) => commands::purge::run(args, &runner),
         Some(Commands::Keystore(ref args)) => commands::keystore::run(args, &runner),
         Some(Commands::Emulator(ref args)) => commands::emulator::run(args, &runner),
+        Some(Commands::Simulator(ref args)) => commands::simulator::run(args, &runner),
         Some(Commands::Doctor) => doctor::run(&runner),
         Some(Commands::Doall(ref args)) => commands::doall::run(args),
         Some(Commands::Completions(ref args)) => commands::completions::run::<Cli>(args),

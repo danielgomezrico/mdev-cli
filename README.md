@@ -27,6 +27,8 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 | `mdev keystore` | `k` | Interactively generate an Android signing keystore |
 | `mdev emulator config` | `e c` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
 | `mdev emulator list` | `e l` | List known AVD config.ini tweaks |
+| `mdev simulator ios` | `sim i` | Boot an iOS simulator (newest runtime, reuses a booted one) and open Simulator.app |
+| `mdev simulator android` | `sim a` | Start an Android AVD and wait until it finishes booting (reuses a running AVD) |
 | `mdev doctor` | `d` | Check development environment (flutter, adb, java, xcode, etc.) |
 | `mdev doall` | `a` | Run a command in every immediate subfolder of a parent dir, in parallel |
 | `mdev completions` | `s` | Generate shell completion script |
