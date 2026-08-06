@@ -1,4 +1,4 @@
-.PHONY: setup build release install uninstall clean start-simulator-ios start-simulator-android
+.PHONY: setup build release install uninstall clean start-simulator-ios start-simulator-android stop-simulator-ios stop-simulator-android
 
 # Overridable: make start-simulator-ios DEVICE="iPhone 16 Pro"
 DEVICE ?= iPhone
@@ -35,3 +35,9 @@ start-simulator-ios:
 
 start-simulator-android:
 	cargo run --quiet -- simulator android $(if $(AVD),--avd "$(AVD)")
+
+stop-simulator-ios:
+	cargo run --quiet -- simulator ios --off --device "$(DEVICE)"
+
+stop-simulator-android:
+	cargo run --quiet -- simulator android --off $(if $(AVD),--avd "$(AVD)")

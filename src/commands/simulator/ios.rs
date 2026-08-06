@@ -9,6 +9,9 @@ pub struct IosArgs {
     /// Case-insensitive substring of the simulator name to boot.
     #[arg(short = 'd', long, default_value = "iPhone")]
     pub device: String,
+    /// Shut the matching simulator down instead of booting it.
+    #[arg(short = 'o', long)]
+    pub off: bool,
 }
 
 /// A bootable simulator plus the runtime it belongs to.
@@ -52,6 +55,31 @@ pub fn run(args: &IosArgs, runner: &dyn Runner) -> i32 {
             return 1;
         }
     };
+
+    if args.off {
+        if !device.booted {
+            logger.info(&format!(
+                "No booted iOS simulator matching '{}'",
+                args.device
+            ));
+            return 0;
+        }
+
+        let shutdown = runner.run("xcrun", &["simctl", "shutdown", &device.udid], None);
+        if !shutdown.is_success() {
+            logger.err(&format!("Failed to shut {} down", device.name));
+            if !shutdown.stderr.is_empty() {
+                logger.detail(&shutdown.stderr);
+            }
+            return 1;
+        }
+
+        logger.success(&format!(
+            "Simulator off: {} ({})",
+            device.name, device.runtime
+        ));
+        return 0;
+    }
 
     if device.booted {
         logger.info(&format!(

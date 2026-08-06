@@ -52,7 +52,7 @@ enum Commands {
     /// Manage Android AVD emulators (e.g. config tweaks)
     #[command(visible_alias = "e")]
     Emulator(EmulatorArgs),
-    /// Boot an iOS simulator or Android emulator
+    /// Turn an iOS simulator or Android emulator on (`sim i` / `sim a`) or off (`--off`)
     #[command(visible_alias = "sim")]
     Simulator(SimulatorArgs),
     /// Check development environment

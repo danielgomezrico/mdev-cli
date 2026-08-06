@@ -12,6 +12,9 @@ pub struct AndroidArgs {
     /// AVD to start (default: the first one from `emulator -list-avds`).
     #[arg(short = 'a', long)]
     pub avd: Option<String>,
+    /// Stop the emulator instead of starting it (every running one when --avd is omitted).
+    #[arg(short = 'o', long)]
+    pub off: bool,
 }
 
 /// How often, and how many times, to re-check a pending state.
@@ -39,7 +42,59 @@ impl PollConfig {
 }
 
 pub fn run(args: &AndroidArgs, runner: &dyn Runner) -> i32 {
+    if args.off {
+        return stop(args, runner);
+    }
     start(args, runner, &PollConfig::serial(), &PollConfig::boot())
+}
+
+/// Kills the emulator hosting `--avd`, or every running emulator when it is omitted.
+fn stop(args: &AndroidArgs, runner: &dyn Runner) -> i32 {
+    let logger = Logger::new();
+
+    let Some(adb) = tool_locator::adb(runner) else {
+        logger.err("adb not found — install the Android SDK platform-tools or set ANDROID_HOME");
+        return 1;
+    };
+
+    let serials = match &args.avd {
+        Some(avd) => match serial_for_avd(&adb, runner, avd) {
+            Some(serial) => vec![serial],
+            None => {
+                logger.info(&format!("AVD {} is not running", avd));
+                return 0;
+            }
+        },
+        None => {
+            let listed = runner.run(&adb, &["devices"], None);
+            parse_emulator_serials(&listed.stdout)
+        }
+    };
+
+    if serials.is_empty() {
+        logger.info("No running emulators");
+        return 0;
+    }
+
+    let mut exit_code = 0;
+    for serial in &serials {
+        let killed = runner.run(&adb, &["-s", serial, "emu", "kill"], None);
+        if killed.is_success() {
+            logger.success(&format!("Emulator off: {}", serial));
+        } else {
+            exit_code = 1;
+            logger.err(&format!("Failed to stop {}", serial));
+            let reason = if killed.stderr.is_empty() {
+                &killed.stdout
+            } else {
+                &killed.stderr
+            };
+            if !reason.is_empty() {
+                logger.detail(reason.trim());
+            }
+        }
+    }
+    exit_code
 }
 
 fn start(
@@ -375,7 +430,44 @@ mod tests {
     fn args_for(avd: &str) -> AndroidArgs {
         AndroidArgs {
             avd: Some(avd.to_string()),
+            off: false,
         }
+    }
+
+    fn off_args(avd: Option<&str>) -> AndroidArgs {
+        AndroidArgs {
+            avd: avd.map(|a| a.to_string()),
+            off: true,
+        }
+    }
+
+    #[test]
+    fn off_kills_the_emulator_hosting_the_avd() {
+        let runner = ScriptedRunner::running("Pixel_9");
+        let code = stop(&off_args(Some("Pixel_9")), &runner);
+
+        assert_eq!(code, 0);
+        assert!(runner.called("-s emulator-5554 emu kill"));
+    }
+
+    // GUARD: without --avd every running emulator goes down, not just the first AVD.
+    #[test]
+    fn off_without_avd_kills_every_running_emulator() {
+        let runner = ScriptedRunner::running("Pixel_9");
+        let code = stop(&off_args(None), &runner);
+
+        assert_eq!(code, 0);
+        assert!(runner.called("-s emulator-5554 emu kill"));
+        assert!(!runner.called("emu avd name"), "must not resolve AVD names");
+    }
+
+    #[test]
+    fn off_is_a_no_op_when_the_avd_is_not_running() {
+        let runner = ScriptedRunner::running("Pixel_9");
+        let code = stop(&off_args(Some("Other_AVD")), &runner);
+
+        assert_eq!(code, 0);
+        assert!(!runner.called("emu kill"));
     }
 
     #[test]
@@ -468,7 +560,10 @@ mod tests {
     fn defaults_to_first_listed_avd() {
         let runner = ScriptedRunner::running("Pixel_9");
         let code = start(
-            &AndroidArgs { avd: None },
+            &AndroidArgs {
+                avd: None,
+                off: false,
+            },
             &runner,
             &instant_poll(3),
             &instant_poll(3),
