@@ -70,32 +70,7 @@ fn reboot_mobile(
         };
     }
 
-    let has_android = app_info.android_package_id.is_some();
-    let has_ios = app_info.ios_bundle_id.is_some() && !cfg!(target_os = "linux");
-
-    let mut any_attempt = false;
-    let mut any_fail = false;
-
-    if has_android {
-        any_attempt = true;
-        if !device_op::run_on_platform(runner, app_info, DevicePlatform::Android, logger, args.verbose, restart_on) {
-            any_fail = true;
-        }
-    }
-
-    if has_ios {
-        any_attempt = true;
-        if !device_op::run_on_platform(runner, app_info, DevicePlatform::Ios, logger, args.verbose, restart_on) {
-            any_fail = true;
-        }
-    }
-
-    if !any_attempt {
-        logger.err("No Android package ID or iOS bundle ID detected.");
-        return 1;
-    }
-
-    if any_fail { 1 } else { 0 }
+    device_op::run_on_all_platforms(runner, app_info, logger, args.verbose, restart_on)
 }
 
 /// Returns Some(true) on success, Some(false) on real failure,
@@ -126,7 +101,7 @@ fn restart_on(
                 runner.run("adb", &["shell", "am", "force-stop", &pkg], None)
             };
             if !stop.is_success() {
-                if device_id.is_none() && device_outcome::is_multi_device_error(&stop) {
+                if device_id.is_none() && device_outcome::should_enumerate(&stop) {
                     pb.finish_and_clear();
                     return None;
                 }

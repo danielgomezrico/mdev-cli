@@ -3,10 +3,21 @@ use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform};
 use crate::runner::Runner;
 
+/// Result of running an operation across every device of one platform.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlatformOutcome {
+    /// Every targeted device succeeded.
+    AllOk,
+    /// At least one targeted device failed.
+    Failed,
+    /// The platform has no running devices — nothing was attempted.
+    NoDevices,
+}
+
 /// Apply `op` to every connected device of `platform`. First tries `op` with no
-/// explicit device (fast path); on `None` (device-ambiguity) it enumerates the
-/// running devices of that platform and runs `op` on each. Returns true iff every
-/// targeted device succeeded. `op(runner, app_info, platform, device_id, logger, verbose)`.
+/// explicit device (fast path); on `None` (op couldn't pick a device on its own)
+/// it enumerates the running devices of that platform and runs `op` on each.
+/// `op(runner, app_info, platform, device_id, logger, verbose)`.
 pub fn run_on_platform<F>(
     runner: &dyn Runner,
     app_info: &AppInfo,
@@ -14,13 +25,13 @@ pub fn run_on_platform<F>(
     logger: &Logger,
     verbose: bool,
     op: F,
-) -> bool
+) -> PlatformOutcome
 where
     F: Fn(&dyn Runner, &AppInfo, DevicePlatform, Option<&str>, &Logger, bool) -> Option<bool>,
 {
     match op(runner, app_info, platform.clone(), None, logger, verbose) {
-        Some(true) => return true,
-        Some(false) => return false,
+        Some(true) => return PlatformOutcome::AllOk,
+        Some(false) => return PlatformOutcome::Failed,
         None => {}
     }
 
@@ -28,8 +39,7 @@ where
     let targets: Vec<_> = devices.iter().filter(|d| d.platform == platform).collect();
 
     if targets.is_empty() {
-        logger.warn(&format!("No running {} devices found.", platform.label()));
-        return false;
+        return PlatformOutcome::NoDevices;
     }
 
     let mut ok = 0usize;
@@ -38,7 +48,64 @@ where
             ok += 1;
         }
     }
-    ok == targets.len()
+    if ok == targets.len() { PlatformOutcome::AllOk } else { PlatformOutcome::Failed }
+}
+
+/// Run `op` on every platform the project targets (Android when it has a
+/// package id, iOS when it has a bundle id and we're not on Linux) and turn the
+/// per-platform outcomes into a process exit code.
+///
+/// A platform with no running devices is skipped, not failed: a Flutter project
+/// with only a booted simulator must not report an Android error. Only when no
+/// platform has any device does the whole run report a problem.
+pub fn run_on_all_platforms<F>(
+    runner: &dyn Runner,
+    app_info: &AppInfo,
+    logger: &Logger,
+    verbose: bool,
+    op: F,
+) -> i32
+where
+    F: Fn(&dyn Runner, &AppInfo, DevicePlatform, Option<&str>, &Logger, bool) -> Option<bool> + Copy,
+{
+    let mut platforms: Vec<DevicePlatform> = Vec::new();
+    if app_info.android_package_id.is_some() {
+        platforms.push(DevicePlatform::Android);
+    }
+    if app_info.ios_bundle_id.is_some() && !cfg!(target_os = "linux") {
+        platforms.push(DevicePlatform::Ios);
+    }
+
+    if platforms.is_empty() {
+        logger.err("No Android package ID or iOS bundle ID detected.");
+        return 1;
+    }
+
+    let outcomes: Vec<(DevicePlatform, PlatformOutcome)> = platforms
+        .into_iter()
+        .map(|p| {
+            let outcome = run_on_platform(runner, app_info, p.clone(), logger, verbose, op);
+            (p, outcome)
+        })
+        .collect();
+
+    let any_device = outcomes
+        .iter()
+        .any(|(_, o)| *o != PlatformOutcome::NoDevices);
+
+    if !any_device {
+        let labels: Vec<&str> = outcomes.iter().map(|(p, _)| p.label()).collect();
+        logger.warn(&format!("No running {} devices found.", labels.join(" or ")));
+        return 1;
+    }
+
+    for (platform, outcome) in &outcomes {
+        if *outcome == PlatformOutcome::NoDevices {
+            logger.detail(&format!("No running {} devices — skipped.", platform.label()));
+        }
+    }
+
+    if outcomes.iter().any(|(_, o)| *o == PlatformOutcome::Failed) { 1 } else { 0 }
 }
 
 #[cfg(test)]
@@ -145,7 +212,7 @@ mod tests {
             },
         );
 
-        assert!(result, "expected true when op returns Some(true)");
+        assert_eq!(result, PlatformOutcome::AllOk, "expected AllOk when op returns Some(true)");
         assert_eq!(call_count.get(), 1, "op must be called exactly once");
     }
 
@@ -170,7 +237,7 @@ mod tests {
             },
         );
 
-        assert!(!result, "expected false when op returns Some(false)");
+        assert_eq!(result, PlatformOutcome::Failed, "expected Failed when op returns Some(false)");
         assert_eq!(call_count.get(), 1, "op must be called exactly once");
     }
 
@@ -196,10 +263,92 @@ mod tests {
             },
         );
 
-        assert!(!result, "expected false when no devices found");
+        assert_eq!(result, PlatformOutcome::NoDevices, "expected NoDevices when none are running");
         // op is called once (the initial device_id=None attempt), then enumeration
         // finds no devices so op is not called again.
         assert_eq!(call_count.get(), 1, "op called once for the initial attempt");
+    }
+
+    // ── run_on_all_platforms: a device-less platform is skipped, not failed ──
+
+    fn dead_runner() -> MockRunner {
+        // Every command fails → DeviceManager enumerates nothing.
+        MockRunner {
+            run_result: RunResult::new(1, String::new(), String::new()),
+        }
+    }
+
+    fn app_info_with(android: Option<&str>, ios: Option<&str>) -> AppInfo {
+        AppInfo::new(
+            String::new(),
+            ProjectType::Flutter,
+            android.map(|s| s.to_string()),
+            ios.map(|s| s.to_string()),
+        )
+    }
+
+    #[test]
+    fn all_platforms_no_ids_errors() {
+        let runner = dead_runner();
+        let logger = Logger::new();
+        let code = run_on_all_platforms(
+            &runner,
+            &app_info_with(None, None),
+            &logger,
+            false,
+            |_r, _a, _p, _d, _l, _v| Some(true),
+        );
+        assert_eq!(code, 1, "no package/bundle id must be an error");
+    }
+
+    #[test]
+    fn all_platforms_no_devices_anywhere_returns_error_code() {
+        let runner = dead_runner();
+        let logger = Logger::new();
+        let code = run_on_all_platforms(
+            &runner,
+            &app_info_with(Some("com.example.app"), None),
+            &logger,
+            false,
+            |_r, _a, _p, _d, _l, _v| None,
+        );
+        assert_eq!(code, 1, "nothing was attempted anywhere → error");
+    }
+
+    #[test]
+    fn all_platforms_android_without_devices_does_not_fail_ios_success() {
+        // The reported bug: a Flutter project with only a booted simulator
+        // printed an Android failure and exited 1.
+        let runner = dead_runner();
+        let logger = Logger::new();
+        let code = run_on_all_platforms(
+            &runner,
+            &app_info_with(Some("com.example.app"), Some("com.example.app")),
+            &logger,
+            false,
+            |_r, _a, platform, _d, _l, _v| match platform {
+                DevicePlatform::Android => None, // no Android device → enumerate → none
+                DevicePlatform::Ios => Some(true),
+            },
+        );
+        assert_eq!(code, 0, "device-less Android must be skipped, not failed");
+    }
+
+    #[test]
+    fn all_platforms_real_failure_still_returns_error_code() {
+        let runner = dead_runner();
+        let logger = Logger::new();
+        let code = run_on_all_platforms(
+            &runner,
+            &app_info_with(Some("com.example.app"), Some("com.example.app")),
+            &logger,
+            false,
+            |_r, _a, platform, _d, _l, _v| match platform {
+                DevicePlatform::Android => Some(false), // real failure on a live device
+                DevicePlatform::Ios => Some(true),
+            },
+        );
+        assert_eq!(code, 1, "a real per-device failure must still exit non-zero");
     }
 
     // ── Enumeration-path regression locks ────────────────────────────────────
@@ -232,7 +381,7 @@ mod tests {
             },
         );
 
-        assert!(result, "single matching device all-success must return true");
+        assert_eq!(result, PlatformOutcome::AllOk, "single matching device all-success must be AllOk");
         assert_eq!(call_count.get(), 2, "op called twice: None first, then device id");
     }
 
@@ -264,7 +413,7 @@ mod tests {
             },
         );
 
-        assert!(result, "two matching devices both succeeding must return true");
+        assert_eq!(result, PlatformOutcome::AllOk, "two matching devices both succeeding must be AllOk");
         assert_eq!(call_count.get(), 3, "op called 3×: None + two device ids");
     }
 
@@ -296,7 +445,7 @@ mod tests {
             },
         );
 
-        assert!(!result, "partial failure (ok=1, targets=2) must return false");
+        assert_eq!(result, PlatformOutcome::Failed, "partial failure (ok=1, targets=2) must be Failed");
     }
 
     #[test]
@@ -327,9 +476,10 @@ mod tests {
             },
         );
 
-        assert!(
-            !result,
-            "wrong-platform devices must be filtered out, yielding false"
+        assert_eq!(
+            result,
+            PlatformOutcome::NoDevices,
+            "wrong-platform devices must be filtered out, yielding NoDevices"
         );
         // op called once (None probe), then no matching device → not called again
         assert_eq!(call_count.get(), 1, "op not called a second time when no targets");
@@ -366,7 +516,7 @@ mod tests {
             },
         );
 
-        assert!(result);
+        assert_eq!(result, PlatformOutcome::AllOk);
         let ids = received_ids.borrow();
         assert_eq!(ids.len(), 2);
         assert_eq!(ids[0], None, "first call must pass None (fast-path probe)");

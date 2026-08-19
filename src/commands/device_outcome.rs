@@ -11,6 +11,34 @@ pub fn is_multi_device_error(r: &RunResult) -> bool {
         || t.contains("multiple devices")
 }
 
+/// No Android device is attached at all (`adb: no devices/emulators found`,
+/// `error: device not found`, `device offline`).
+pub fn is_no_devices_error(r: &RunResult) -> bool {
+    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
+    t.contains("no devices/emulators found")
+        || t.contains("no devices found")
+        || t.contains("no emulators found")
+        || t.contains("device not found")
+        || t.contains("device offline")
+        || t.contains("device unauthorized")
+}
+
+/// The command couldn't pick a device on its own: either several are attached
+/// or none is. Both cases are resolved by enumerating devices and retrying.
+pub fn should_enumerate(r: &RunResult) -> bool {
+    is_multi_device_error(r) || is_no_devices_error(r)
+}
+
+/// The app simply isn't installed on the device — not a real failure for
+/// uninstall/clear, which both want the app gone.
+pub fn is_not_installed_error(r: &RunResult) -> bool {
+    let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
+    t.contains("delete_failed_internal_error")
+        || t.contains("unknown package")
+        || t.contains("failed to clear application data")
+        || t.trim() == "failed"
+}
+
 pub fn is_no_booted_error(r: &RunResult) -> bool {
     let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
     t.contains("no devices are booted")
@@ -99,6 +127,41 @@ mod tests {
     fn is_multi_device_error_empty_run_result() {
         let res = r("", "");
         assert!(!is_multi_device_error(&res));
+    }
+
+    #[test]
+    fn is_no_devices_error_matches_adb_phrasing() {
+        assert!(is_no_devices_error(&r("", "adb: no devices/emulators found")));
+        assert!(is_no_devices_error(&r("", "error: device not found")));
+        assert!(is_no_devices_error(&r("", "error: device offline")));
+    }
+
+    #[test]
+    fn is_no_devices_error_false_for_other_failures() {
+        assert!(!is_no_devices_error(&r("", "Failure [DELETE_FAILED_INTERNAL_ERROR]")));
+    }
+
+    #[test]
+    fn should_enumerate_covers_both_multi_and_none() {
+        assert!(should_enumerate(&r("", "adb: more than one device/emulator")));
+        assert!(should_enumerate(&r("", "adb: no devices/emulators found")));
+        assert!(!should_enumerate(&r("", "Failure [DELETE_FAILED_INTERNAL_ERROR]")));
+    }
+
+    #[test]
+    fn is_not_installed_error_matches_uninstall_and_clear_output() {
+        assert!(is_not_installed_error(&r("Failure [DELETE_FAILED_INTERNAL_ERROR]", "")));
+        assert!(is_not_installed_error(&r("", "Unknown package: com.example.app")));
+        assert!(is_not_installed_error(&r("Failed", "")));
+        assert!(is_not_installed_error(&r(
+            "",
+            "Error: Failed to clear application data"
+        )));
+    }
+
+    #[test]
+    fn is_not_installed_error_false_for_device_problems() {
+        assert!(!is_not_installed_error(&r("", "adb: no devices/emulators found")));
     }
 
     #[test]

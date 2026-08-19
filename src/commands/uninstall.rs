@@ -38,32 +38,7 @@ pub fn run(args: &UninstallArgs, runner: &dyn Runner) -> i32 {
         };
     }
 
-    let has_android = app_info.android_package_id.is_some();
-    let has_ios = app_info.ios_bundle_id.is_some() && !cfg!(target_os = "linux");
-
-    let mut any_attempt = false;
-    let mut any_fail = false;
-
-    if has_android {
-        any_attempt = true;
-        if !device_op::run_on_platform(runner, &app_info, DevicePlatform::Android, &logger, args.verbose, uninstall_on) {
-            any_fail = true;
-        }
-    }
-
-    if has_ios {
-        any_attempt = true;
-        if !device_op::run_on_platform(runner, &app_info, DevicePlatform::Ios, &logger, args.verbose, uninstall_on) {
-            any_fail = true;
-        }
-    }
-
-    if !any_attempt {
-        logger.err("No Android package ID or iOS bundle ID detected.");
-        return 1;
-    }
-
-    if any_fail { 1 } else { 0 }
+    device_op::run_on_all_platforms(runner, &app_info, &logger, args.verbose, uninstall_on)
 }
 
 /// Run a single uninstall. Returns:
@@ -97,9 +72,16 @@ fn uninstall_on(
             if result.is_success() {
                 pb.finish_with_message(format!("{} Uninstalled from {}", "✓".green(), label));
                 Some(true)
-            } else if device_id.is_none() && device_outcome::is_multi_device_error(&result) {
+            } else if device_id.is_none() && device_outcome::should_enumerate(&result) {
                 pb.finish_and_clear();
                 None
+            } else if device_outcome::is_not_installed_error(&result) {
+                pb.finish_with_message(format!(
+                    "{} Not installed on {}",
+                    "✓".green(),
+                    label
+                ));
+                Some(true)
             } else {
                 let err = device_outcome::error_text(&result);
                 pb.finish_with_message(format!(
