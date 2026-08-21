@@ -31,6 +31,7 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 | `mdev simulator ios --off` | `sim i -o` | Shut down the booted simulator matching `--device` |
 | `mdev simulator android` | `sim a` | Start an Android AVD and wait until it finishes booting (reuses a running AVD) |
 | `mdev simulator android --off` | `sim a -o` | Stop the `--avd` emulator, or every running emulator when `--avd` is omitted |
+| `mdev fix android` | `f a` | Repair a running Android emulator that lost its network (Wi-Fi "!", nothing loads) |
 | `mdev doctor` | `d` | Check development environment (flutter, adb, java, xcode, etc.) |
 | `mdev doall` | `a` | Run a command in every immediate subfolder of a parent dir, in parallel |
 | `mdev completions` | `s` | Generate shell completion script |
@@ -136,6 +137,13 @@ mdev emulator config -n           # dry run
 mdev emulator config --set hw.keyboard=yes --backup
 mdev emulator config --avd Pixel_9
 
+# Fix an emulator whose Wi-Fi shows "!" and never loads anything
+mdev fix android                           # every running emulator
+mdev fix a --avd Pixel_9                   # just this one
+mdev fix a --dns 8.8.8.8,1.1.1.1           # force these DNS servers on the restart
+mdev fix a --no-restart                    # diagnose + guest-side fixes only
+mdev fix a -y                              # do not ask before cold-booting
+
 # Check your dev environment
 mdev doctor
 
@@ -144,6 +152,18 @@ mdev doall git status
 mdev doall nexusindex
 mdev doall -C ~/projects gitnexus analyze --embeddings --index-only
 ```
+
+## Fixing a broken emulator network
+
+An Android emulator forwards DNS to whatever resolvers the host had **when it booted**. Change network, drop a VPN, or lose the resolver that was listening on `127.x`, and every lookup inside the guest times out: packets still flow (the gateway answers, `ping 8.8.8.8` works), but no name resolves, so the status bar shows Wi-Fi with a "!" and nothing loads.
+
+`mdev fix android` probes for that state and applies the smallest repair that works, in order:
+
+1. Leave airplane mode and re-enable Wi-Fi if either is off.
+2. Toggle Wi-Fi, which forces Android to re-run network validation and clears a stale "!".
+3. Cold-boot the AVD with `-dns-server <host resolvers>` — the only fix for a dead resolver, since the emulator re-reads DNS at startup. Loopback resolvers are dropped (the guest cannot reach them) and `8.8.8.8,1.1.1.1` fill the remaining slots.
+
+It targets every running emulator, or just `--avd <name>`, and asks before the restart unless you pass `-y`.
 
 ## Shell completions
 

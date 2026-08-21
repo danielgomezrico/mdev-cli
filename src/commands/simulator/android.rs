@@ -25,7 +25,7 @@ pub struct PollConfig {
 
 impl PollConfig {
     /// Waiting for a freshly launched emulator to register with adb.
-    fn serial() -> Self {
+    pub fn serial() -> Self {
         Self {
             attempts: 60,
             interval: Duration::from_secs(2),
@@ -33,7 +33,7 @@ impl PollConfig {
     }
 
     /// Waiting for a registered emulator to finish booting.
-    fn boot() -> Self {
+    pub fn boot() -> Self {
         Self {
             attempts: 90,
             interval: Duration::from_secs(2),
@@ -143,7 +143,7 @@ fn start(
                 avd,
                 log_path.display()
             ));
-            match launch(&emulator, &adb, runner, &avd, &log_path, serial_poll) {
+            match launch(&emulator, &adb, runner, &avd, &[], &log_path, serial_poll) {
                 Ok(serial) => serial,
                 Err(message) => {
                     logger.err(&message);
@@ -176,15 +176,18 @@ fn start(
 
 /// Spawns the emulator and waits for it to register with adb, failing fast when
 /// the process dies first (bad AVD name, stale lock, broken SDK path).
-fn launch(
+pub fn launch(
     emulator: &str,
     adb: &str,
     runner: &dyn Runner,
     avd: &str,
+    extra_args: &[&str],
     log_path: &Path,
     poll: &PollConfig,
 ) -> Result<String, String> {
-    let Some(mut process) = runner.spawn_detached(emulator, &["-avd", avd], log_path) else {
+    let mut launch_args = vec!["-avd", avd];
+    launch_args.extend_from_slice(extra_args);
+    let Some(mut process) = runner.spawn_detached(emulator, &launch_args, log_path) else {
         return Err(format!(
             "Could not start the emulator binary at {}",
             emulator
@@ -214,7 +217,7 @@ fn launch(
     ))
 }
 
-fn wait_for_boot(adb: &str, runner: &dyn Runner, serial: &str, poll: &PollConfig) -> bool {
+pub fn wait_for_boot(adb: &str, runner: &dyn Runner, serial: &str, poll: &PollConfig) -> bool {
     for attempt in 0..poll.attempts {
         let boot_completed = getprop(adb, runner, serial, "sys.boot_completed");
         let bootanim = getprop(adb, runner, serial, "init.svc.bootanim");
@@ -234,7 +237,7 @@ fn getprop(adb: &str, runner: &dyn Runner, serial: &str, property: &str) -> Stri
 }
 
 /// Serial of the running emulator hosting `avd`, if any.
-fn serial_for_avd(adb: &str, runner: &dyn Runner, avd: &str) -> Option<String> {
+pub fn serial_for_avd(adb: &str, runner: &dyn Runner, avd: &str) -> Option<String> {
     let listed = runner.run(adb, &["devices"], None);
     parse_emulator_serials(&listed.stdout)
         .into_iter()
@@ -244,7 +247,7 @@ fn serial_for_avd(adb: &str, runner: &dyn Runner, avd: &str) -> Option<String> {
         })
 }
 
-fn log_path_for(avd: &str) -> PathBuf {
+pub fn log_path_for(avd: &str) -> PathBuf {
     std::env::temp_dir().join(format!("mdev-emulator-{}.log", avd))
 }
 
@@ -264,7 +267,7 @@ fn parse_avd_names(stdout: &str) -> Vec<String> {
 }
 
 /// Emulator serials from `adb devices` (physical and network devices excluded).
-fn parse_emulator_serials(stdout: &str) -> Vec<String> {
+pub fn parse_emulator_serials(stdout: &str) -> Vec<String> {
     stdout
         .lines()
         .filter_map(|line| line.split_whitespace().next())
@@ -274,7 +277,7 @@ fn parse_emulator_serials(stdout: &str) -> Vec<String> {
 }
 
 /// `adb emu avd name` answers with the name followed by an `OK` status line.
-fn parse_avd_reply(stdout: &str) -> Option<String> {
+pub fn parse_avd_reply(stdout: &str) -> Option<String> {
     stdout
         .lines()
         .map(|line| line.replace('\r', "").trim().to_string())
