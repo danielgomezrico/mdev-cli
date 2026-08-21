@@ -201,7 +201,11 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, _verbose: bool) {
             Ok(_) => ok += 1,
             Err(e) => {
                 err += 1;
-                logger.err(&format!("[extras] failed to delete {}: {}", path.display(), e));
+                logger.err(&format!(
+                    "[extras] failed to delete {}: {}",
+                    path.display(),
+                    e
+                ));
             }
         }
     }
@@ -220,7 +224,11 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, _verbose: bool) {
                     Ok(_) => ok += 1,
                     Err(e) => {
                         err += 1;
-                        logger.err(&format!("[extras] failed to delete {}: {}", path.display(), e));
+                        logger.err(&format!(
+                            "[extras] failed to delete {}: {}",
+                            path.display(),
+                            e
+                        ));
                     }
                 }
             }
@@ -233,7 +241,11 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, _verbose: bool) {
         logger.success(&format!(
             "[extras] deleted {} item(s){}",
             ok,
-            if err > 0 { format!(", {} failed", err) } else { String::new() }
+            if err > 0 {
+                format!(", {} failed", err)
+            } else {
+                String::new()
+            }
         ));
     }
 }
@@ -253,7 +265,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn args() -> PurgeArgs {
-        PurgeArgs { dry_run: true, ..Default::default() }
+        PurgeArgs {
+            dry_run: true,
+            ..Default::default()
+        }
     }
 
     #[test]

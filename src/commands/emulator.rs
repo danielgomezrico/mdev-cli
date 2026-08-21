@@ -108,11 +108,7 @@ const KNOWN_TWEAKS: &[(&str, &str, &str)] = &[
         "2048",
         "Guest RAM in MB. Raise for heavier apps; lower to save host RAM.",
     ),
-    (
-        "vm.heapSize",
-        "256",
-        "Per-app VM heap size in MB.",
-    ),
+    ("vm.heapSize", "256", "Per-app VM heap size in MB."),
     (
         "disk.dataPartition.size",
         "6G",
@@ -199,12 +195,24 @@ fn run_list() -> i32 {
     logger.info("Known AVD config.ini tweaks (apply with `mdev emulator config --set key=value`):");
     logger.info("");
 
-    let key_width = KNOWN_TWEAKS.iter().map(|(k, _, _)| k.len()).max().unwrap_or(0);
-    let val_width = KNOWN_TWEAKS.iter().map(|(_, v, _)| v.len()).max().unwrap_or(0);
+    let key_width = KNOWN_TWEAKS
+        .iter()
+        .map(|(k, _, _)| k.len())
+        .max()
+        .unwrap_or(0);
+    let val_width = KNOWN_TWEAKS
+        .iter()
+        .map(|(_, v, _)| v.len())
+        .max()
+        .unwrap_or(0);
 
     for (key, val, desc) in KNOWN_TWEAKS {
         let is_default = DEFAULT_TWEAKS.iter().any(|(dk, _)| dk == key);
-        let marker = if is_default { "★".yellow().to_string() } else { " ".to_string() };
+        let marker = if is_default {
+            "★".yellow().to_string()
+        } else {
+            " ".to_string()
+        };
         let key_padded = format!("{:<kw$}", key, kw = key_width);
         let val_padded = format!("{:<vw$}", val, vw = val_width);
         logger.info(&format!(

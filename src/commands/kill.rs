@@ -50,16 +50,17 @@ pub fn run(args: &KillArgs, runner: &dyn Runner) -> i32 {
 // Mobile: force-stop the app on connected Android/iOS devices.
 // ---------------------------------------------------------------------------
 
-fn kill_mobile(
-    runner: &dyn Runner,
-    app_info: &AppInfo,
-    args: &KillArgs,
-    logger: &Logger,
-) -> i32 {
+fn kill_mobile(runner: &dyn Runner, app_info: &AppInfo, args: &KillArgs, logger: &Logger) -> i32 {
     if let Some(ref device_id) = args.device {
         let platform = DevicePlatform::from_device_id(device_id);
-        return match force_stop_on(runner, app_info, platform, Some(device_id), logger, args.verbose)
-        {
+        return match force_stop_on(
+            runner,
+            app_info,
+            platform,
+            Some(device_id),
+            logger,
+            args.verbose,
+        ) {
             Some(true) => 0,
             _ => 1,
         };
@@ -188,7 +189,11 @@ pub(crate) fn kill_server(runner: &dyn Runner, root: &Path, logger: &Logger, ver
         }
     }
 
-    if any_fail { 1 } else { 0 }
+    if any_fail {
+        1
+    } else {
+        0
+    }
 }
 
 /// Find every process LISTENing on a TCP port whose working directory is
@@ -239,7 +244,11 @@ fn find_project_servers(runner: &dyn Runner, root: &Path) -> Vec<Server> {
 
 /// True if process `pid`'s current working directory is at or below `root`.
 fn cwd_under(runner: &dyn Runner, pid: u32, root: &Path) -> bool {
-    let res = runner.run("lsof", &["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"], None);
+    let res = runner.run(
+        "lsof",
+        &["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"],
+        None,
+    );
     if !res.is_success() {
         return false;
     }
@@ -257,4 +266,3 @@ fn port_from_name(name: &str) -> Option<String> {
         .filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
         .map(|p| p.to_string())
 }
-

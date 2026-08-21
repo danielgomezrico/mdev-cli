@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use super::PurgeArgs;
 use super::common::{delete_entry, delete_existing_with_confirm, existing_paths, EntryKind};
+use super::PurgeArgs;
 use crate::logger::Logger;
 
 /// Per-project Rust/Cargo cleanup.
@@ -11,7 +11,14 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
     let paths: [PathBuf; 1] = [root.join("target")];
     for path in &paths {
-        delete_entry(path, Some("rust"), EntryKind::Dir, dry_run, verbose, &logger);
+        delete_entry(
+            path,
+            Some("rust"),
+            EntryKind::Dir,
+            dry_run,
+            verbose,
+            &logger,
+        );
     }
 }
 

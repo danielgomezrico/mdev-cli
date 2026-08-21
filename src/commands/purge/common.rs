@@ -187,24 +187,14 @@ pub fn delete_entry(
 
 fn format_dry_run(path: &Path, tag: Option<&str>) -> String {
     match tag {
-        Some(t) => format!(
-            "  {} [{}] would delete {}",
-            "~".cyan(),
-            t,
-            path.display()
-        ),
+        Some(t) => format!("  {} [{}] would delete {}", "~".cyan(), t, path.display()),
         None => format!("  {} {}", "~".cyan(), path.display()),
     }
 }
 
 fn format_success(path: &Path, tag: Option<&str>) -> String {
     match tag {
-        Some(t) => format!(
-            "  {} [{}] Deleted {}",
-            "✓".green(),
-            t,
-            path.display()
-        ),
+        Some(t) => format!("  {} [{}] Deleted {}", "✓".green(), t, path.display()),
         None => format!("  {} Deleted {}", "✓".green(), path.display()),
     }
 }
@@ -218,12 +208,7 @@ fn format_fail(path: &Path, tag: Option<&str>, e: &std::io::Error) -> String {
             path.display(),
             e
         ),
-        None => format!(
-            "  {} Failed to delete {}: {}",
-            "✗".red(),
-            path.display(),
-            e
-        ),
+        None => format!("  {} Failed to delete {}: {}", "✗".red(), path.display(), e),
     }
 }
 
@@ -368,14 +353,7 @@ mod tests {
         fs::create_dir_all(&b).unwrap();
         let logger = Logger::new();
         let existing = [a.as_path(), b.as_path()];
-        let n = delete_existing_with_confirm(
-            &existing,
-            true,
-            false,
-            &logger,
-            Some("t"),
-            "Delete?",
-        );
+        let n = delete_existing_with_confirm(&existing, true, false, &logger, Some("t"), "Delete?");
         assert_eq!(n, 2);
         assert!(a.exists() && b.exists());
     }
@@ -411,4 +389,3 @@ mod tests {
         }
     }
 }
-

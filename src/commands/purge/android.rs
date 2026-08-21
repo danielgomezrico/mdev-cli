@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use crate::commands::purge::PurgeArgs;
 use crate::commands::purge::common::delete_paths;
+use crate::commands::purge::PurgeArgs;
 use crate::logger::Logger;
 
 pub fn run(args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {

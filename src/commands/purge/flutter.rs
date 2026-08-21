@@ -1,8 +1,8 @@
 use colored::Colorize;
 use std::path::Path;
 
-use crate::commands::purge::PurgeArgs;
 use crate::commands::purge::common::delete_paths;
+use crate::commands::purge::PurgeArgs;
 use crate::logger::Logger;
 use crate::runner::{ProcessRunner, Runner};
 
@@ -14,8 +14,7 @@ pub fn run(args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
 
     let do_flutter_clean = !explicit_flags || args.flutter;
     let do_android_build = !explicit_flags || args.android || args.flutter;
-    let do_ios_pods =
-        (!explicit_flags || args.ios || args.flutter) && cfg!(target_os = "macos");
+    let do_ios_pods = (!explicit_flags || args.ios || args.flutter) && cfg!(target_os = "macos");
 
     if do_flutter_clean {
         run_flutter_clean(root, dry_run, verbose, &runner, &logger);

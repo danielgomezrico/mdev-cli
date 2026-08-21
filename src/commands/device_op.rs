@@ -44,11 +44,22 @@ where
 
     let mut ok = 0usize;
     for d in &targets {
-        if let Some(true) = op(runner, app_info, platform.clone(), Some(&d.id), logger, verbose) {
+        if let Some(true) = op(
+            runner,
+            app_info,
+            platform.clone(),
+            Some(&d.id),
+            logger,
+            verbose,
+        ) {
             ok += 1;
         }
     }
-    if ok == targets.len() { PlatformOutcome::AllOk } else { PlatformOutcome::Failed }
+    if ok == targets.len() {
+        PlatformOutcome::AllOk
+    } else {
+        PlatformOutcome::Failed
+    }
 }
 
 /// Run `op` on every platform the project targets (Android when it has a
@@ -66,7 +77,8 @@ pub fn run_on_all_platforms<F>(
     op: F,
 ) -> i32
 where
-    F: Fn(&dyn Runner, &AppInfo, DevicePlatform, Option<&str>, &Logger, bool) -> Option<bool> + Copy,
+    F: Fn(&dyn Runner, &AppInfo, DevicePlatform, Option<&str>, &Logger, bool) -> Option<bool>
+        + Copy,
 {
     let mut platforms: Vec<DevicePlatform> = Vec::new();
     if app_info.android_package_id.is_some() {
@@ -95,17 +107,27 @@ where
 
     if !any_device {
         let labels: Vec<&str> = outcomes.iter().map(|(p, _)| p.label()).collect();
-        logger.warn(&format!("No running {} devices found.", labels.join(" or ")));
+        logger.warn(&format!(
+            "No running {} devices found.",
+            labels.join(" or ")
+        ));
         return 1;
     }
 
     for (platform, outcome) in &outcomes {
         if *outcome == PlatformOutcome::NoDevices {
-            logger.detail(&format!("No running {} devices — skipped.", platform.label()));
+            logger.detail(&format!(
+                "No running {} devices — skipped.",
+                platform.label()
+            ));
         }
     }
 
-    if outcomes.iter().any(|(_, o)| *o == PlatformOutcome::Failed) { 1 } else { 0 }
+    if outcomes.iter().any(|(_, o)| *o == PlatformOutcome::Failed) {
+        1
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -163,12 +185,7 @@ mod tests {
     }
 
     impl Runner for FlutterDevicesMockRunner {
-        fn run(
-            &self,
-            executable: &str,
-            _args: &[&str],
-            _working_dir: Option<&str>,
-        ) -> RunResult {
+        fn run(&self, executable: &str, _args: &[&str], _working_dir: Option<&str>) -> RunResult {
             if executable == "flutter" {
                 RunResult::new(0, self.flutter_json.clone(), String::new())
             } else {
@@ -212,7 +229,11 @@ mod tests {
             },
         );
 
-        assert_eq!(result, PlatformOutcome::AllOk, "expected AllOk when op returns Some(true)");
+        assert_eq!(
+            result,
+            PlatformOutcome::AllOk,
+            "expected AllOk when op returns Some(true)"
+        );
         assert_eq!(call_count.get(), 1, "op must be called exactly once");
     }
 
@@ -237,7 +258,11 @@ mod tests {
             },
         );
 
-        assert_eq!(result, PlatformOutcome::Failed, "expected Failed when op returns Some(false)");
+        assert_eq!(
+            result,
+            PlatformOutcome::Failed,
+            "expected Failed when op returns Some(false)"
+        );
         assert_eq!(call_count.get(), 1, "op must be called exactly once");
     }
 
@@ -263,10 +288,18 @@ mod tests {
             },
         );
 
-        assert_eq!(result, PlatformOutcome::NoDevices, "expected NoDevices when none are running");
+        assert_eq!(
+            result,
+            PlatformOutcome::NoDevices,
+            "expected NoDevices when none are running"
+        );
         // op is called once (the initial device_id=None attempt), then enumeration
         // finds no devices so op is not called again.
-        assert_eq!(call_count.get(), 1, "op called once for the initial attempt");
+        assert_eq!(
+            call_count.get(),
+            1,
+            "op called once for the initial attempt"
+        );
     }
 
     // ── run_on_all_platforms: a device-less platform is skipped, not failed ──
@@ -348,16 +381,21 @@ mod tests {
                 DevicePlatform::Ios => Some(true),
             },
         );
-        assert_eq!(code, 1, "a real per-device failure must still exit non-zero");
+        assert_eq!(
+            code, 1,
+            "a real per-device failure must still exit non-zero"
+        );
     }
 
     // ── Enumeration-path regression locks ────────────────────────────────────
 
     #[test]
     fn none_one_matching_device_op_true_returns_true() {
-        let json =
-            serde_json::json!([FlutterDevicesMockRunner::android_device("emulator-5554", "Pixel")])
-                .to_string();
+        let json = serde_json::json!([FlutterDevicesMockRunner::android_device(
+            "emulator-5554",
+            "Pixel"
+        )])
+        .to_string();
         let runner = FlutterDevicesMockRunner::new(json);
         let app_info = make_app_info();
         let logger = Logger::new();
@@ -381,8 +419,16 @@ mod tests {
             },
         );
 
-        assert_eq!(result, PlatformOutcome::AllOk, "single matching device all-success must be AllOk");
-        assert_eq!(call_count.get(), 2, "op called twice: None first, then device id");
+        assert_eq!(
+            result,
+            PlatformOutcome::AllOk,
+            "single matching device all-success must be AllOk"
+        );
+        assert_eq!(
+            call_count.get(),
+            2,
+            "op called twice: None first, then device id"
+        );
     }
 
     #[test]
@@ -413,7 +459,11 @@ mod tests {
             },
         );
 
-        assert_eq!(result, PlatformOutcome::AllOk, "two matching devices both succeeding must be AllOk");
+        assert_eq!(
+            result,
+            PlatformOutcome::AllOk,
+            "two matching devices both succeeding must be AllOk"
+        );
         assert_eq!(call_count.get(), 3, "op called 3×: None + two device ids");
     }
 
@@ -438,22 +488,27 @@ mod tests {
             |_r, _a, _p, _device_id, _l, _v| {
                 call_count.set(call_count.get() + 1);
                 match call_count.get() {
-                    1 => None,          // trigger enumeration
-                    2 => Some(true),    // first device succeeds
-                    _ => Some(false),   // second device fails → partial failure
+                    1 => None,        // trigger enumeration
+                    2 => Some(true),  // first device succeeds
+                    _ => Some(false), // second device fails → partial failure
                 }
             },
         );
 
-        assert_eq!(result, PlatformOutcome::Failed, "partial failure (ok=1, targets=2) must be Failed");
+        assert_eq!(
+            result,
+            PlatformOutcome::Failed,
+            "partial failure (ok=1, targets=2) must be Failed"
+        );
     }
 
     #[test]
     fn none_wrong_platform_devices_only_returns_false() {
         // Only an iOS device present; requesting Android → targets empty after filter.
-        let json = serde_json::json!([
-            FlutterDevicesMockRunner::ios_device("00008101-000A1234", "iPhone 14"),
-        ])
+        let json = serde_json::json!([FlutterDevicesMockRunner::ios_device(
+            "00008101-000A1234",
+            "iPhone 14"
+        ),])
         .to_string();
         let runner = FlutterDevicesMockRunner::new(json);
         let app_info = make_app_info();
@@ -482,14 +537,20 @@ mod tests {
             "wrong-platform devices must be filtered out, yielding NoDevices"
         );
         // op called once (None probe), then no matching device → not called again
-        assert_eq!(call_count.get(), 1, "op not called a second time when no targets");
+        assert_eq!(
+            call_count.get(),
+            1,
+            "op not called a second time when no targets"
+        );
     }
 
     #[test]
     fn none_single_device_op_receives_correct_device_id() {
-        let json =
-            serde_json::json!([FlutterDevicesMockRunner::android_device("emulator-5554", "Pixel")])
-                .to_string();
+        let json = serde_json::json!([FlutterDevicesMockRunner::android_device(
+            "emulator-5554",
+            "Pixel"
+        )])
+        .to_string();
         let runner = FlutterDevicesMockRunner::new(json);
         let app_info = make_app_info();
         let logger = Logger::new();

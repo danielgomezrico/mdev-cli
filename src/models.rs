@@ -36,7 +36,10 @@ impl ProjectType {
     /// Returns true for mobile project types (Flutter, Android, iOS).
     #[allow(dead_code)]
     pub fn is_mobile(&self) -> bool {
-        matches!(self, ProjectType::Flutter | ProjectType::Android | ProjectType::Ios)
+        matches!(
+            self,
+            ProjectType::Flutter | ProjectType::Android | ProjectType::Ios
+        )
     }
 
     /// Returns true only for iOS (which requires macOS to clean).
@@ -57,8 +60,12 @@ impl ProjectType {
             ProjectType::Go => "go",
             ProjectType::Ruby { rails: true } => "rails",
             ProjectType::Ruby { rails: false } => "ruby",
-            ProjectType::Python { framework: Some(PyFw::Django) } => "django",
-            ProjectType::Python { framework: Some(PyFw::FastAPI) } => "fastapi",
+            ProjectType::Python {
+                framework: Some(PyFw::Django),
+            } => "django",
+            ProjectType::Python {
+                framework: Some(PyFw::FastAPI),
+            } => "fastapi",
             ProjectType::Python { .. } => "python",
             ProjectType::Unknown => "unknown",
         }
@@ -149,7 +156,11 @@ impl DevicePlatform {
 
     pub fn from_device_id(device_id: &str) -> Self {
         let looks_ios = device_id.len() == 36 && device_id.matches('-').count() == 4;
-        if looks_ios { DevicePlatform::Ios } else { DevicePlatform::Android }
+        if looks_ios {
+            DevicePlatform::Ios
+        } else {
+            DevicePlatform::Android
+        }
     }
 }
 
@@ -218,7 +229,10 @@ mod tests {
 
     #[test]
     fn device_platform_from_device_id_android() {
-        assert_eq!(DevicePlatform::from_device_id("emulator-5554"), DevicePlatform::Android);
+        assert_eq!(
+            DevicePlatform::from_device_id("emulator-5554"),
+            DevicePlatform::Android
+        );
     }
 
     // GUARD: label strings are exactly "Android" and "iOS" (case-sensitive pin)

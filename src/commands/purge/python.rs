@@ -1,10 +1,10 @@
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 
-use crate::commands::purge::PurgeArgs;
 use crate::commands::purge::common::{
     self, delete_entry, delete_existing_with_confirm, existing_paths, EntryKind,
 };
+use crate::commands::purge::PurgeArgs;
 use crate::logger::Logger;
 
 /// Max recursion depth for the project-local walk. Mirrors the detector's
@@ -148,13 +148,7 @@ pub fn run_venv(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
 /// whose name matches `dir_names`. Skip-list (see `SKIP_DIRS`) prunes the
 /// descent. When a match is hit we delete the whole subtree and stop
 /// descending into it.
-fn walk_and_delete(
-    root: &Path,
-    dir_names: &[&str],
-    dry_run: bool,
-    verbose: bool,
-    logger: &Logger,
-) {
+fn walk_and_delete(root: &Path, dir_names: &[&str], dry_run: bool, verbose: bool, logger: &Logger) {
     walk_inner(root, dir_names, 0, dry_run, verbose, logger);
 }
 
@@ -219,7 +213,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn args() -> PurgeArgs {
-        PurgeArgs { dry_run: true, ..Default::default() }
+        PurgeArgs {
+            dry_run: true,
+            ..Default::default()
+        }
     }
 
     #[test]

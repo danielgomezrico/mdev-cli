@@ -21,10 +21,7 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
 
     if !root.join("go.mod").exists() {
         if verbose {
-            logger.detail(&format!(
-                "[go] skip {} — no go.mod",
-                root.display()
-            ));
+            logger.detail(&format!("[go] skip {} — no go.mod", root.display()));
         }
         return;
     }
@@ -40,11 +37,7 @@ pub fn run(_args: &PurgeArgs, root: &Path, dry_run: bool, verbose: bool) {
         }
         match std::fs::remove_dir_all(&path) {
             Ok(_) => logger.success(&format!("[go] deleted {}", path.display())),
-            Err(e) => logger.err(&format!(
-                "[go] failed to delete {}: {}",
-                path.display(),
-                e
-            )),
+            Err(e) => logger.err(&format!("[go] failed to delete {}: {}", path.display(), e)),
         }
     }
 }
@@ -120,11 +113,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
         if p.exists() {
             match std::fs::remove_dir_all(&p) {
                 Ok(_) => logger.success(&format!("[go] deleted {}", p.display())),
-                Err(e) => logger.err(&format!(
-                    "[go] failed to delete {}: {}",
-                    p.display(),
-                    e
-                )),
+                Err(e) => logger.err(&format!("[go] failed to delete {}: {}", p.display(), e)),
             }
         }
     }
@@ -137,7 +126,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn args() -> PurgeArgs {
-        PurgeArgs { dry_run: true, ..Default::default() }
+        PurgeArgs {
+            dry_run: true,
+            ..Default::default()
+        }
     }
 
     #[test]

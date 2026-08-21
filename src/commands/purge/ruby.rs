@@ -1,10 +1,10 @@
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 
-use crate::commands::purge::PurgeArgs;
 use crate::commands::purge::common::{
     delete_entry, delete_existing_with_confirm, existing_paths, EntryKind,
 };
+use crate::commands::purge::PurgeArgs;
 use crate::logger::Logger;
 
 /// Per-project Ruby/Rails cleanup.
@@ -106,7 +106,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn args() -> PurgeArgs {
-        PurgeArgs { dry_run: true, ..Default::default() }
+        PurgeArgs {
+            dry_run: true,
+            ..Default::default()
+        }
     }
 
     #[test]

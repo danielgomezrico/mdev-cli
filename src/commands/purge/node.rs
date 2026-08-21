@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use crate::commands::purge::PurgeArgs;
 use crate::commands::purge::common::{confirm, delete_path_verbose, delete_paths};
+use crate::commands::purge::PurgeArgs;
 use crate::logger::Logger;
 
 /// Per-project Node/frontend cache cleanup. Deletes well-known build,
@@ -35,10 +35,7 @@ pub fn run_global(_args: &PurgeArgs, dry_run: bool, verbose: bool) {
     let logger = Logger::new();
     let home = dirs::home_dir().unwrap_or_default();
 
-    let mut candidates: Vec<std::path::PathBuf> = vec![
-        home.join(".npm"),
-        home.join(".pnpm-store"),
-    ];
+    let mut candidates: Vec<std::path::PathBuf> = vec![home.join(".npm"), home.join(".pnpm-store")];
     if cfg!(target_os = "linux") {
         candidates.push(home.join(".cache").join("yarn"));
     }
@@ -69,7 +66,10 @@ mod tests {
     use tempfile::TempDir;
 
     fn args() -> PurgeArgs {
-        PurgeArgs { dry_run: true, ..Default::default() }
+        PurgeArgs {
+            dry_run: true,
+            ..Default::default()
+        }
     }
 
     #[test]

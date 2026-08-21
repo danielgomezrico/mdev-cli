@@ -63,7 +63,9 @@ fn namespace_pattern() -> &'static Regex {
 // - setter:       applicationId.set("com...") (common in KTS)
 fn application_id_literal_pattern() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"applicationId\s*(?:=|\.set\s*\(|\s)\s*["']([^"']+)["']"#).unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r#"applicationId\s*(?:=|\.set\s*\(|\s)\s*["']([^"']+)["']"#).unwrap()
+    })
 }
 
 pub struct AppDetector;
@@ -92,8 +94,7 @@ impl AppDetector {
             }
             // Special case for "we are inside android/" pointing at a
             // pure-Android project root one level up.
-            if (current.join("build.gradle.kts").exists()
-                || current.join("build.gradle").exists())
+            if (current.join("build.gradle.kts").exists() || current.join("build.gradle").exists())
                 && !current.join("app").join("build.gradle.kts").exists()
                 && !current.join("app").join("build.gradle").exists()
             {
@@ -477,7 +478,11 @@ fn detect_android_id(android_root: &Path) -> Option<String> {
     }
     // 3. Indirect: convention plugins / const refs / namespace / manifest.
     detect_android_id_fallback(
-        &[android_root.to_path_buf(), android_root.join("app"), android_root.join("build-logic")],
+        &[
+            android_root.to_path_buf(),
+            android_root.join("app"),
+            android_root.join("build-logic"),
+        ],
         &android_root
             .join("app")
             .join("src")
@@ -505,8 +510,8 @@ fn detect_android_id_fallback(scan_roots: &[PathBuf], manifest: &Path) -> Option
                 return Some(id);
             }
             // legacy specific
-            if let Some(id) = captured(kotlin_dsl_pattern(), &c)
-                .or_else(|| captured(groovy_dsl_pattern(), &c))
+            if let Some(id) =
+                captured(kotlin_dsl_pattern(), &c).or_else(|| captured(groovy_dsl_pattern(), &c))
             {
                 return Some(id);
             }
@@ -555,8 +560,7 @@ fn collect_gradle_kotlin_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>)
             collect_gradle_kotlin_files(&path, depth + 1, out);
         } else {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.ends_with(".gradle.kts") || name.ends_with(".gradle") || name.ends_with(".kt")
-            {
+            if name.ends_with(".gradle.kts") || name.ends_with(".gradle") || name.ends_with(".kt") {
                 out.push(path);
             }
         }
@@ -594,7 +598,11 @@ fn extract_application_id_from_gradle(path: &Path, _is_kts: bool) -> Option<Stri
         return Some(id);
     }
     // Legacy specific fallbacks (kept for safety / old narrow cases)
-    if let Some(id) = kotlin_dsl_pattern().captures(&content).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()) {
+    if let Some(id) = kotlin_dsl_pattern()
+        .captures(&content)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+    {
         return Some(id);
     }
     groovy_dsl_pattern()
@@ -697,20 +705,14 @@ mod tests {
 
     impl Marker {
         const fn file(path: &'static str) -> Self {
-            Self {
-                path,
-                contents: "",
-            }
+            Self { path, contents: "" }
         }
         const fn file_with(path: &'static str, contents: &'static str) -> Self {
             Self { path, contents }
         }
         const fn dir(path: &'static str) -> Self {
             // `path` must end with '/'.
-            Self {
-                path,
-                contents: "",
-            }
+            Self { path, contents: "" }
         }
     }
 
@@ -733,7 +735,8 @@ mod tests {
         seed(&tmp, markers);
         let got = classify_dir(tmp.path());
         assert_eq!(
-            got, expected,
+            got,
+            expected,
             "classify_dir mismatch for markers {:?}",
             markers.iter().map(|m| m.path).collect::<Vec<_>>()
         );
@@ -760,10 +763,7 @@ mod tests {
     #[test]
     fn node_pnpm() {
         case(
-            &[
-                Marker::file("package.json"),
-                Marker::file("pnpm-lock.yaml"),
-            ],
+            &[Marker::file("package.json"), Marker::file("pnpm-lock.yaml")],
             ProjectType::Node {
                 manager: NodePm::Pnpm,
             },
@@ -825,7 +825,10 @@ mod tests {
 
     #[test]
     fn ruby_gemfile_only() {
-        case(&[Marker::file("Gemfile")], ProjectType::Ruby { rails: false });
+        case(
+            &[Marker::file("Gemfile")],
+            ProjectType::Ruby { rails: false },
+        );
     }
 
     #[test]

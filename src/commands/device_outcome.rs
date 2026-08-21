@@ -1,7 +1,11 @@
 use crate::runner::RunResult;
 
 pub fn error_text(r: &RunResult) -> &str {
-    if !r.stderr.is_empty() { &r.stderr } else { &r.stdout }
+    if !r.stderr.is_empty() {
+        &r.stderr
+    } else {
+        &r.stdout
+    }
 }
 
 pub fn is_multi_device_error(r: &RunResult) -> bool {
@@ -131,27 +135,45 @@ mod tests {
 
     #[test]
     fn is_no_devices_error_matches_adb_phrasing() {
-        assert!(is_no_devices_error(&r("", "adb: no devices/emulators found")));
+        assert!(is_no_devices_error(&r(
+            "",
+            "adb: no devices/emulators found"
+        )));
         assert!(is_no_devices_error(&r("", "error: device not found")));
         assert!(is_no_devices_error(&r("", "error: device offline")));
     }
 
     #[test]
     fn is_no_devices_error_false_for_other_failures() {
-        assert!(!is_no_devices_error(&r("", "Failure [DELETE_FAILED_INTERNAL_ERROR]")));
+        assert!(!is_no_devices_error(&r(
+            "",
+            "Failure [DELETE_FAILED_INTERNAL_ERROR]"
+        )));
     }
 
     #[test]
     fn should_enumerate_covers_both_multi_and_none() {
-        assert!(should_enumerate(&r("", "adb: more than one device/emulator")));
+        assert!(should_enumerate(&r(
+            "",
+            "adb: more than one device/emulator"
+        )));
         assert!(should_enumerate(&r("", "adb: no devices/emulators found")));
-        assert!(!should_enumerate(&r("", "Failure [DELETE_FAILED_INTERNAL_ERROR]")));
+        assert!(!should_enumerate(&r(
+            "",
+            "Failure [DELETE_FAILED_INTERNAL_ERROR]"
+        )));
     }
 
     #[test]
     fn is_not_installed_error_matches_uninstall_and_clear_output() {
-        assert!(is_not_installed_error(&r("Failure [DELETE_FAILED_INTERNAL_ERROR]", "")));
-        assert!(is_not_installed_error(&r("", "Unknown package: com.example.app")));
+        assert!(is_not_installed_error(&r(
+            "Failure [DELETE_FAILED_INTERNAL_ERROR]",
+            ""
+        )));
+        assert!(is_not_installed_error(&r(
+            "",
+            "Unknown package: com.example.app"
+        )));
         assert!(is_not_installed_error(&r("Failed", "")));
         assert!(is_not_installed_error(&r(
             "",
@@ -161,7 +183,10 @@ mod tests {
 
     #[test]
     fn is_not_installed_error_false_for_device_problems() {
-        assert!(!is_not_installed_error(&r("", "adb: no devices/emulators found")));
+        assert!(!is_not_installed_error(&r(
+            "",
+            "adb: no devices/emulators found"
+        )));
     }
 
     #[test]

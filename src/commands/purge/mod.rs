@@ -8,16 +8,16 @@ use crate::logger::Logger;
 use crate::models::{AppInfo, ProjectType};
 use crate::runner::Runner;
 
-pub mod common;
-pub mod flutter;
 pub mod android;
+pub mod common;
+pub mod extras;
+pub mod flutter;
+pub mod go;
 pub mod ios;
 pub mod node;
-pub mod rust;
-pub mod go;
-pub mod ruby;
 pub mod python;
-pub mod extras;
+pub mod ruby;
+pub mod rust;
 pub mod worktrees;
 
 use common::{delete_path_verbose, select_paths_to_delete};
@@ -154,8 +154,16 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         info.project_type == ProjectType::Ios || info.project_type == ProjectType::Flutter
     });
 
-    let explicit_flags = args.flutter || args.pub_cache || args.gradle || args.android || args.ios
-        || args.node || args.rust || args.go || args.ruby || args.python;
+    let explicit_flags = args.flutter
+        || args.pub_cache
+        || args.gradle
+        || args.android
+        || args.ios
+        || args.node
+        || args.rust
+        || args.go
+        || args.ruby
+        || args.python;
 
     // Determine global targets — Flutter caches (pub + SDK bin/cache) are offered even when
     // no Flutter project is detected, because they are global disk hogs.
@@ -164,11 +172,7 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
     } else {
         true
     };
-    let do_flutter_sdk = if explicit_flags {
-        args.flutter
-    } else {
-        true
-    };
+    let do_flutter_sdk = if explicit_flags { args.flutter } else { true };
     let do_gradle = if explicit_flags {
         args.gradle
     } else {
@@ -298,11 +302,8 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         if args.dry_run {
             logger.detail("  (dry run — skipped)");
         } else {
-            let selected = select_paths_to_delete(
-                &existing_globals,
-                &logger,
-                "  Delete global caches?",
-            );
+            let selected =
+                select_paths_to_delete(&existing_globals, &logger, "  Delete global caches?");
             let pub_cache = home.join(".pub-cache");
             for p in selected {
                 if p == pub_cache.as_path() {
@@ -375,10 +376,7 @@ fn locate_flutter_sdk_caches(runner: &dyn Runner) -> Vec<PathBuf> {
 /// Pure helper: combine an optional active SDK cache with every
 /// `<version_root>/<version>/bin/cache` that exists, deduped by canonical
 /// path. Extracted so tests can inject synthetic roots.
-fn collect_flutter_sdk_caches(
-    active: Option<PathBuf>,
-    version_roots: &[PathBuf],
-) -> Vec<PathBuf> {
+fn collect_flutter_sdk_caches(active: Option<PathBuf>, version_roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     if let Some(p) = active {
         out.push(p);
@@ -485,7 +483,10 @@ mod tests {
     fn collect_projects_does_not_walk_up_to_parent_container() {
         let tmp = TempDir::new().unwrap();
         touch(&tmp.path().join("Gemfile"), "");
-        touch(&tmp.path().join("repo/Cargo.toml"), "[package]\nname = \"x\"\n");
+        touch(
+            &tmp.path().join("repo/Cargo.toml"),
+            "[package]\nname = \"x\"\n",
+        );
 
         let repo = tmp.path().join("repo");
         let got = collect_projects(&repo);
@@ -501,7 +502,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         touch(&tmp.path().join("package.json"), "{}");
         touch(
-            &tmp.path().join("projects/open-source/cli-apps-helper/Cargo.toml"),
+            &tmp.path()
+                .join("projects/open-source/cli-apps-helper/Cargo.toml"),
             "[package]\nname = \"mdev\"\n",
         );
         touch(
@@ -509,7 +511,8 @@ mod tests {
             "module example.com/other\n",
         );
         touch(
-            &tmp.path().join("Library/Zed/languages/bash-language-server/package.json"),
+            &tmp.path()
+                .join("Library/Zed/languages/bash-language-server/package.json"),
             "{}",
         );
 
@@ -532,7 +535,10 @@ mod tests {
     #[test]
     fn collect_projects_single_repo_at_scan_root() {
         let tmp = TempDir::new().unwrap();
-        touch(&tmp.path().join("Cargo.toml"), "[package]\nname = \"solo\"\n");
+        touch(
+            &tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"solo\"\n",
+        );
 
         let got = collect_projects(tmp.path());
 

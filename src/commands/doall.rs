@@ -38,7 +38,10 @@ pub fn run(args: &DoallArgs) -> i32 {
     let parent = match args.dir.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            logger.err(&format!("Cannot access parent dir '{}': {e}", args.dir.display()));
+            logger.err(&format!(
+                "Cannot access parent dir '{}': {e}",
+                args.dir.display()
+            ));
             return 1;
         }
     };
@@ -89,7 +92,8 @@ pub fn run(args: &DoallArgs) -> i32 {
     pb.enable_steady_tick(Duration::from_millis(80));
 
     // Folders still running — shared so the bar can show live in-flight names.
-    let running: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new(names.iter().cloned().collect()));
+    let running: Arc<Mutex<BTreeSet<String>>> =
+        Arc::new(Mutex::new(names.iter().cloned().collect()));
     pb.set_message(format_running_msg(0, total, &running.lock().unwrap()));
 
     let (tx, rx) = mpsc::channel::<DirResult>();
@@ -131,7 +135,10 @@ pub fn run(args: &DoallArgs) -> i32 {
         logger.success(&format!("── {ok_count}/{total} ok ──"));
         0
     } else {
-        logger.err(&format!("── {ok_count}/{total} ok · {} failed ──", failed.len()));
+        logger.err(&format!(
+            "── {ok_count}/{total} ok · {} failed ──",
+            failed.len()
+        ));
         for r in &failed {
             logger.err(&format!("  ✗ {} (exit {})", r.name, r.exit_code));
         }
@@ -162,8 +169,12 @@ fn run_in_dir(shell: &str, shell_cmd: &str, dir: &Path) -> DirResult {
         Ok(output) => DirResult {
             name,
             exit_code: output.status.code().unwrap_or(1),
-            stdout: String::from_utf8_lossy(&output.stdout).trim_end().to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim_end().to_string(),
+            stdout: String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr)
+                .trim_end()
+                .to_string(),
         },
         Err(e) => DirResult {
             name,
@@ -239,16 +250,20 @@ fn list_subdirs(parent: &Path, include_hidden: bool) -> std::io::Result<Vec<Path
 
 /// Join argv into a shell-safe command string.
 fn join_shell_command(args: &[String]) -> String {
-    args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ")
+    args.iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
-    if s.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '@' | '%' | '+' | '=' | ','))
-    {
+    if s.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '-' | '_' | '.' | '/' | ':' | '@' | '%' | '+' | '=' | ',')
+    }) {
         return s.to_string();
     }
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -281,7 +296,10 @@ mod tests {
 
     #[test]
     fn truncate_names_adds_remainder() {
-        let set: BTreeSet<String> = ["a", "b", "c", "d", "e"].into_iter().map(String::from).collect();
+        let set: BTreeSet<String> = ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .map(String::from)
+            .collect();
         assert_eq!(truncate_names(&set, 3), "a, b, c, +2");
     }
 

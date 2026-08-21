@@ -32,7 +32,14 @@ pub fn run(args: &UninstallArgs, runner: &dyn Runner) -> i32 {
     // If a specific device was requested, run against it directly.
     if let Some(ref device_id) = args.device {
         let platform = DevicePlatform::from_device_id(device_id);
-        return match uninstall_on(runner, &app_info, platform, Some(device_id), &logger, args.verbose) {
+        return match uninstall_on(
+            runner,
+            &app_info,
+            platform,
+            Some(device_id),
+            &logger,
+            args.verbose,
+        ) {
             Some(true) => 0,
             _ => 1,
         };
@@ -76,20 +83,11 @@ fn uninstall_on(
                 pb.finish_and_clear();
                 None
             } else if device_outcome::is_not_installed_error(&result) {
-                pb.finish_with_message(format!(
-                    "{} Not installed on {}",
-                    "✓".green(),
-                    label
-                ));
+                pb.finish_with_message(format!("{} Not installed on {}", "✓".green(), label));
                 Some(true)
             } else {
                 let err = device_outcome::error_text(&result);
-                pb.finish_with_message(format!(
-                    "{} Failed: {} — {}",
-                    "✗".red(),
-                    label,
-                    err
-                ));
+                pb.finish_with_message(format!("{} Failed: {} — {}", "✗".red(), label, err));
                 if verbose {
                     logger.err(err);
                 }
@@ -119,12 +117,7 @@ fn uninstall_on(
                 None
             } else {
                 let err = device_outcome::error_text(&result);
-                pb.finish_with_message(format!(
-                    "{} Failed: {} — {}",
-                    "✗".red(),
-                    label,
-                    err
-                ));
+                pb.finish_with_message(format!("{} Failed: {} — {}", "✗".red(), label, err));
                 if verbose {
                     logger.err(err);
                 }
@@ -133,4 +126,3 @@ fn uninstall_on(
         }
     }
 }
-

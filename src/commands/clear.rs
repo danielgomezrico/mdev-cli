@@ -31,7 +31,14 @@ pub fn run(args: &ClearArgs, runner: &dyn Runner) -> i32 {
 
     if let Some(ref device_id) = args.device {
         let platform = DevicePlatform::from_device_id(device_id);
-        return match clear_on(runner, &app_info, platform, Some(device_id), &logger, args.verbose) {
+        return match clear_on(
+            runner,
+            &app_info,
+            platform,
+            Some(device_id),
+            &logger,
+            args.verbose,
+        ) {
             Some(true) => 0,
             _ => 1,
         };
@@ -88,7 +95,12 @@ fn clear_android(
             return Some(true);
         }
         let err = device_outcome::error_text(&clear_result);
-        pb.finish_with_message(format!("{} Failed to clear: {} — {}", "✗".red(), label, err));
+        pb.finish_with_message(format!(
+            "{} Failed to clear: {} — {}",
+            "✗".red(),
+            label,
+            err
+        ));
         if verbose {
             logger.err(err);
         }
@@ -99,8 +111,15 @@ fn clear_android(
         runner.run(
             "adb",
             &[
-                "-s", id, "shell", "monkey", "-p", &pkg, "-c",
-                "android.intent.category.LAUNCHER", "1",
+                "-s",
+                id,
+                "shell",
+                "monkey",
+                "-p",
+                &pkg,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
             ],
             None,
         )
@@ -108,8 +127,13 @@ fn clear_android(
         runner.run(
             "adb",
             &[
-                "shell", "monkey", "-p", &pkg, "-c",
-                "android.intent.category.LAUNCHER", "1",
+                "shell",
+                "monkey",
+                "-p",
+                &pkg,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
             ],
             None,
         )
@@ -189,7 +213,11 @@ fn clear_ios(
     }
 
     if !cleared {
-        pb.finish_with_message(format!("{} Failed to clear container: {}", "✗".red(), label));
+        pb.finish_with_message(format!(
+            "{} Failed to clear container: {}",
+            "✗".red(),
+            label
+        ));
         return Some(false);
     }
 
@@ -211,4 +239,3 @@ fn clear_ios(
         Some(false)
     }
 }
-

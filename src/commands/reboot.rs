@@ -64,7 +64,14 @@ fn reboot_mobile(
 ) -> i32 {
     if let Some(ref device_id) = args.device {
         let platform = DevicePlatform::from_device_id(device_id);
-        return match restart_on(runner, app_info, platform, Some(device_id), logger, args.verbose) {
+        return match restart_on(
+            runner,
+            app_info,
+            platform,
+            Some(device_id),
+            logger,
+            args.verbose,
+        ) {
             Some(true) => 0,
             _ => 1,
         };
@@ -106,7 +113,12 @@ fn restart_on(
                     return None;
                 }
                 let err = device_outcome::error_text(&stop);
-                pb.finish_with_message(format!("{} Failed to stop: {} — {}", "✗".red(), label, err));
+                pb.finish_with_message(format!(
+                    "{} Failed to stop: {} — {}",
+                    "✗".red(),
+                    label,
+                    err
+                ));
                 if verbose {
                     logger.err(err);
                 }
@@ -117,8 +129,15 @@ fn restart_on(
                 runner.run(
                     "adb",
                     &[
-                        "-s", id, "shell", "monkey", "-p", &pkg, "-c",
-                        "android.intent.category.LAUNCHER", "1",
+                        "-s",
+                        id,
+                        "shell",
+                        "monkey",
+                        "-p",
+                        &pkg,
+                        "-c",
+                        "android.intent.category.LAUNCHER",
+                        "1",
                     ],
                     None,
                 )
@@ -126,8 +145,13 @@ fn restart_on(
                 runner.run(
                     "adb",
                     &[
-                        "shell", "monkey", "-p", &pkg, "-c",
-                        "android.intent.category.LAUNCHER", "1",
+                        "shell",
+                        "monkey",
+                        "-p",
+                        &pkg,
+                        "-c",
+                        "android.intent.category.LAUNCHER",
+                        "1",
                     ],
                     None,
                 )
@@ -232,4 +256,3 @@ fn start_command(pt: &ProjectType) -> Option<&'static str> {
         _ => None,
     }
 }
-
