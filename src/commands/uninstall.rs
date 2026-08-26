@@ -76,22 +76,44 @@ fn uninstall_on(
             } else {
                 runner.run("adb", &["uninstall", &pkg], None)
             };
-            if result.is_success() {
-                pb.finish_with_message(format!("{} Uninstalled from {}", "✓".green(), label));
-                Some(true)
-            } else if device_id.is_none() && device_outcome::should_enumerate(&result) {
+            if device_id.is_none() && device_outcome::should_enumerate(&result) {
                 pb.finish_and_clear();
                 None
+            } else if device_outcome::stdout_is_success(&result) {
+                pb.finish_with_message(format!("{} Uninstalled from {}", "✓".green(), label));
+                Some(true)
             } else if device_outcome::is_not_installed_error(&result) {
                 pb.finish_with_message(format!("{} Not installed on {}", "✓".green(), label));
                 Some(true)
             } else {
-                let err = device_outcome::error_text(&result);
-                pb.finish_with_message(format!("{} Failed: {} — {}", "✗".red(), label, err));
-                if verbose {
-                    logger.err(err);
+                let path_result = if let Some(id) = device_id {
+                    runner.run("adb", &["-s", id, "shell", "pm", "path", &pkg], None)
+                } else {
+                    runner.run("adb", &["shell", "pm", "path", &pkg], None)
+                };
+                if device_id.is_none() && device_outcome::should_enumerate(&path_result) {
+                    pb.finish_and_clear();
+                    return None;
                 }
-                Some(false)
+                if device_outcome::should_enumerate(&path_result) {
+                    let err = device_outcome::error_text(&path_result);
+                    pb.finish_with_message(format!("{} Failed: {} — {}", "✗".red(), label, err));
+                    if verbose {
+                        logger.err(err);
+                    }
+                    return Some(false);
+                }
+                if path_result.stdout.to_lowercase().contains("package:") {
+                    let err = device_outcome::error_text(&result);
+                    pb.finish_with_message(format!("{} Failed: {} — {}", "✗".red(), label, err));
+                    if verbose {
+                        logger.err(err);
+                    }
+                    Some(false)
+                } else {
+                    pb.finish_with_message(format!("{} Not installed on {}", "✓".green(), label));
+                    Some(true)
+                }
             }
         }
         DevicePlatform::Ios => {
@@ -124,5 +146,219 @@ fn uninstall_on(
                 Some(false)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::RunResult;
+
+    struct MockRunner {
+        uninstall: RunResult,
+        clear: RunResult,
+        pm_path: Option<RunResult>,
+        monkey: Option<RunResult>,
+    }
+
+    impl Runner for MockRunner {
+        fn run(&self, _exe: &str, args: &[&str], _: Option<&str>) -> RunResult {
+            if args.iter().any(|a| *a == "uninstall") {
+                return self.uninstall.clone();
+            }
+            if args.iter().any(|a| *a == "path") {
+                return self.pm_path.clone().expect("pm path must not be called");
+            }
+            if args.windows(2).any(|w| w == ["pm", "clear"]) {
+                return self.clear.clone();
+            }
+            if args.iter().any(|a| *a == "monkey") {
+                return self.monkey.clone().expect("monkey must not be called");
+            }
+            RunResult::new(1, String::new(), "unexpected".into())
+        }
+        fn which(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+
+    fn app(pt: ProjectType) -> AppInfo {
+        AppInfo::new(String::new(), pt, Some("com.example.app".into()), None)
+    }
+
+    fn failure_stdout() -> RunResult {
+        RunResult::new(
+            0,
+            "Failure [DELETE_FAILED_INTERNAL_ERROR]".into(),
+            String::new(),
+        )
+    }
+
+    fn pm_path_present() -> RunResult {
+        RunResult::new(
+            0,
+            "package:/data/app/com.example.app/base.apk".into(),
+            String::new(),
+        )
+    }
+
+    #[test]
+    fn uninstall_on_exit0_failure_stdout_is_not_success() {
+        let runner = MockRunner {
+            uninstall: failure_stdout(),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: Some(pm_path_present()),
+            monkey: None,
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Android),
+            DevicePlatform::Android,
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(false));
+    }
+
+    #[test]
+    fn uninstall_on_exit1_delete_failed_is_not_success() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(
+                1,
+                "Failure [DELETE_FAILED_INTERNAL_ERROR]".into(),
+                String::new(),
+            ),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: Some(pm_path_present()),
+            monkey: None,
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Android),
+            DevicePlatform::Android,
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(false));
+    }
+
+    #[test]
+    fn uninstall_on_flutter_appinfo_same_android_arm() {
+        let runner = MockRunner {
+            uninstall: failure_stdout(),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: Some(pm_path_present()),
+            monkey: None,
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Flutter),
+            DevicePlatform::Android,
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(false));
+    }
+
+    #[test]
+    fn uninstall_on_stdout_success_exit0_is_ok() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(0, "Success".into(), String::new()),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: None,
+            monkey: None,
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Android),
+            DevicePlatform::Android,
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(true));
+    }
+
+    #[test]
+    fn uninstall_on_unknown_package_is_idempotent_ok() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "Unknown package: com.example.app".into()),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: None,
+            monkey: None,
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Android),
+            DevicePlatform::Android,
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(true));
+    }
+
+    #[test]
+    fn uninstall_on_nonsuccess_pm_path_empty_is_ok() {
+        let runner = MockRunner {
+            uninstall: failure_stdout(),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: Some(RunResult::new(1, String::new(), String::new())),
+            monkey: None,
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Android),
+            DevicePlatform::Android,
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(true));
+    }
+
+    #[test]
+    fn uninstall_on_nonsuccess_pm_path_present_is_fail() {
+        let runner = MockRunner {
+            uninstall: failure_stdout(),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: Some(pm_path_present()),
+            monkey: None,
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Android),
+            DevicePlatform::Android,
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(false));
+    }
+
+    #[test]
+    fn uninstall_on_should_enumerate_returns_none() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(
+                1,
+                String::new(),
+                "error: more than one device attached".into(),
+            ),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: None,
+            monkey: None,
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Android),
+            DevicePlatform::Android,
+            None,
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, None);
     }
 }

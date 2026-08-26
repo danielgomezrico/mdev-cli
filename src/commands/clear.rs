@@ -85,11 +85,11 @@ fn clear_android(
     } else {
         runner.run("adb", &["shell", "pm", "clear", &pkg], None)
     };
-    if !clear_result.is_success() {
-        if device_id.is_none() && device_outcome::should_enumerate(&clear_result) {
-            pb.finish_and_clear();
-            return None;
-        }
+    if device_id.is_none() && device_outcome::should_enumerate(&clear_result) {
+        pb.finish_and_clear();
+        return None;
+    }
+    if !device_outcome::stdout_is_success(&clear_result) {
         if device_outcome::is_not_installed_error(&clear_result) {
             pb.finish_with_message(format!("{} Not installed on {}", "✓".green(), label));
             return Some(true);
@@ -237,5 +237,155 @@ fn clear_ios(
             logger.err(err);
         }
         Some(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::RunResult;
+
+    struct MockRunner {
+        uninstall: RunResult,
+        clear: RunResult,
+        pm_path: Option<RunResult>,
+        monkey: Option<RunResult>,
+    }
+
+    impl Runner for MockRunner {
+        fn run(&self, _exe: &str, args: &[&str], _: Option<&str>) -> RunResult {
+            if args.iter().any(|a| *a == "uninstall") {
+                return self.uninstall.clone();
+            }
+            if args.iter().any(|a| *a == "path") {
+                return self.pm_path.clone().expect("pm path must not be called");
+            }
+            if args.windows(2).any(|w| w == ["pm", "clear"]) {
+                return self.clear.clone();
+            }
+            if args.iter().any(|a| *a == "monkey") {
+                return self.monkey.clone().expect("monkey must not be called");
+            }
+            RunResult::new(1, String::new(), "unexpected".into())
+        }
+        fn which(&self, _: &str) -> Option<String> {
+            None
+        }
+    }
+
+    fn app(pt: ProjectType) -> AppInfo {
+        AppInfo::new(String::new(), pt, Some("com.example.app".into()), None)
+    }
+
+    #[test]
+    fn clear_android_exit1_failed_is_not_success() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "unexpected".into()),
+            clear: RunResult::new(1, "Failed".into(), String::new()),
+            pm_path: None,
+            monkey: None,
+        };
+        let got = clear_android(
+            &runner,
+            &app(ProjectType::Android),
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(false));
+    }
+
+    #[test]
+    fn clear_android_exit0_failed_stdout_is_not_success() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "unexpected".into()),
+            clear: RunResult::new(0, "Failed".into(), String::new()),
+            pm_path: None,
+            monkey: None,
+        };
+        let got = clear_android(
+            &runner,
+            &app(ProjectType::Android),
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(false));
+    }
+
+    #[test]
+    fn clear_android_stdout_success_then_monkey_ok() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "unexpected".into()),
+            clear: RunResult::new(0, "Success".into(), String::new()),
+            pm_path: None,
+            monkey: Some(RunResult::new(0, String::new(), String::new())),
+        };
+        let got = clear_android(
+            &runner,
+            &app(ProjectType::Android),
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(true));
+    }
+
+    #[test]
+    fn clear_android_unknown_package_is_ok() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "unexpected".into()),
+            clear: RunResult::new(1, String::new(), "Unknown package: com.example.app".into()),
+            pm_path: None,
+            monkey: None,
+        };
+        let got = clear_android(
+            &runner,
+            &app(ProjectType::Android),
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(true));
+    }
+
+    #[test]
+    fn clear_android_failed_to_clear_application_data_is_fail() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "unexpected".into()),
+            clear: RunResult::new(
+                1,
+                String::new(),
+                "Error: Failed to clear application data".into(),
+            ),
+            pm_path: None,
+            monkey: None,
+        };
+        let got = clear_android(
+            &runner,
+            &app(ProjectType::Android),
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(false));
+    }
+
+    #[test]
+    fn clear_android_should_enumerate_returns_none() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "unexpected".into()),
+            clear: RunResult::new(1, String::new(), "adb: no devices/emulators found".into()),
+            pm_path: None,
+            monkey: None,
+        };
+        let got = clear_android(
+            &runner,
+            &app(ProjectType::Android),
+            None,
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, None);
     }
 }

@@ -37,10 +37,12 @@ pub fn should_enumerate(r: &RunResult) -> bool {
 /// uninstall/clear, which both want the app gone.
 pub fn is_not_installed_error(r: &RunResult) -> bool {
     let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("delete_failed_internal_error")
-        || t.contains("unknown package")
-        || t.contains("failed to clear application data")
-        || t.trim() == "failed"
+    t.contains("unknown package")
+}
+
+/// ADB / `pm` printed a sole success token (install/uninstall/clear).
+pub fn stdout_is_success(r: &RunResult) -> bool {
+    r.stdout.trim().eq_ignore_ascii_case("success")
 }
 
 pub fn is_no_booted_error(r: &RunResult) -> bool {
@@ -167,15 +169,35 @@ mod tests {
     #[test]
     fn is_not_installed_error_matches_uninstall_and_clear_output() {
         assert!(is_not_installed_error(&r(
-            "Failure [DELETE_FAILED_INTERNAL_ERROR]",
-            ""
+            "",
+            "Unknown package: com.example.app"
         )));
+    }
+
+    #[test]
+    fn is_not_installed_error_true_for_unknown_package() {
         assert!(is_not_installed_error(&r(
             "",
             "Unknown package: com.example.app"
         )));
-        assert!(is_not_installed_error(&r("Failed", "")));
-        assert!(is_not_installed_error(&r(
+    }
+
+    #[test]
+    fn is_not_installed_error_false_for_delete_failed_internal_error() {
+        assert!(!is_not_installed_error(&r(
+            "Failure [DELETE_FAILED_INTERNAL_ERROR]",
+            ""
+        )));
+    }
+
+    #[test]
+    fn is_not_installed_error_false_for_trimmed_failed() {
+        assert!(!is_not_installed_error(&r("Failed", "")));
+    }
+
+    #[test]
+    fn is_not_installed_error_false_for_failed_to_clear_application_data() {
+        assert!(!is_not_installed_error(&r(
             "",
             "Error: Failed to clear application data"
         )));
@@ -187,6 +209,31 @@ mod tests {
             "",
             "adb: no devices/emulators found"
         )));
+    }
+
+    #[test]
+    fn stdout_is_success_true_for_success_ci() {
+        assert!(stdout_is_success(&r("Success", "")));
+        assert!(stdout_is_success(&r("success", "")));
+        assert!(stdout_is_success(&r("SUCCESS", "")));
+    }
+
+    #[test]
+    fn stdout_is_success_false_for_failure_bracket() {
+        assert!(!stdout_is_success(&r(
+            "Failure [DELETE_FAILED_INTERNAL_ERROR]",
+            ""
+        )));
+    }
+
+    #[test]
+    fn stdout_is_success_false_for_failed() {
+        assert!(!stdout_is_success(&r("Failed", "")));
+    }
+
+    #[test]
+    fn stdout_is_success_false_for_empty() {
+        assert!(!stdout_is_success(&r("", "")));
     }
 
     #[test]
