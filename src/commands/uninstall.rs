@@ -71,6 +71,7 @@ fn uninstall_on(
             };
             let label = device_id.unwrap_or("android");
             let pb = logger.progress(&format!("Uninstalling from {}...", label));
+            device_outcome::ensure_airplane_mode(runner, device_id);
             let result = if let Some(id) = device_id {
                 runner.run("adb", &["-s", id, "uninstall", &pkg], None)
             } else {
@@ -159,10 +160,20 @@ mod tests {
         clear: RunResult,
         pm_path: Option<RunResult>,
         monkey: Option<RunResult>,
+        calls: std::cell::RefCell<Vec<Vec<String>>>,
     }
 
     impl Runner for MockRunner {
         fn run(&self, _exe: &str, args: &[&str], _: Option<&str>) -> RunResult {
+            self.calls
+                .borrow_mut()
+                .push(args.iter().map(|a| (*a).to_string()).collect());
+            if args.iter().any(|a| *a == "airplane_mode_on") {
+                return RunResult::new(0, "0".into(), String::new());
+            }
+            if args.iter().any(|a| *a == "airplane-mode") {
+                return RunResult::new(0, String::new(), String::new());
+            }
             if args.iter().any(|a| *a == "uninstall") {
                 return self.uninstall.clone();
             }
@@ -209,6 +220,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "unexpected".into()),
             pm_path: Some(pm_path_present()),
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = uninstall_on(
             &runner,
@@ -232,6 +244,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "unexpected".into()),
             pm_path: Some(pm_path_present()),
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = uninstall_on(
             &runner,
@@ -251,6 +264,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "unexpected".into()),
             pm_path: Some(pm_path_present()),
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = uninstall_on(
             &runner,
@@ -270,6 +284,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "unexpected".into()),
             pm_path: None,
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = uninstall_on(
             &runner,
@@ -289,6 +304,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "unexpected".into()),
             pm_path: None,
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = uninstall_on(
             &runner,
@@ -308,6 +324,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "unexpected".into()),
             pm_path: Some(RunResult::new(1, String::new(), String::new())),
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = uninstall_on(
             &runner,
@@ -327,6 +344,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "unexpected".into()),
             pm_path: Some(pm_path_present()),
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = uninstall_on(
             &runner,
@@ -350,6 +368,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "unexpected".into()),
             pm_path: None,
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = uninstall_on(
             &runner,
@@ -360,5 +379,40 @@ mod tests {
             false,
         );
         assert_eq!(got, None);
+        assert!(runner
+            .calls
+            .borrow()
+            .iter()
+            .all(|c| !c.iter().any(|a| a == "airplane-mode")));
+    }
+
+    #[test]
+    fn uninstall_enables_airplane_mode_before_adb_uninstall() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(0, "Success".into(), String::new()),
+            clear: RunResult::new(1, String::new(), "unexpected".into()),
+            pm_path: None,
+            monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        let got = uninstall_on(
+            &runner,
+            &app(ProjectType::Android),
+            DevicePlatform::Android,
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(true));
+        let calls = runner.calls.borrow();
+        let enable = calls
+            .iter()
+            .position(|c| c.iter().any(|a| a == "airplane-mode"))
+            .expect("airplane mode enable");
+        let uninstall = calls
+            .iter()
+            .position(|c| c.iter().any(|a| a == "uninstall"))
+            .expect("adb uninstall");
+        assert!(enable < uninstall);
     }
 }

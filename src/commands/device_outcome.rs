@@ -45,6 +45,45 @@ pub fn stdout_is_success(r: &RunResult) -> bool {
     r.stdout.trim().eq_ignore_ascii_case("success")
 }
 
+/// `pm clear` and `pm uninstall` only succeed while the cell radio is off.
+/// Enable airplane mode on this serial before either command. Already-on is a
+/// no-op. A missing serial means adb has not picked a device yet — skip, so
+/// the following command can still report "enumerate" instead of us doing it.
+pub fn ensure_airplane_mode(runner: &dyn crate::runner::Runner, serial: Option<&str>) {
+    let Some(serial) = serial else {
+        return;
+    };
+    let current = runner.run(
+        "adb",
+        &[
+            "-s",
+            serial,
+            "shell",
+            "settings",
+            "get",
+            "global",
+            "airplane_mode_on",
+        ],
+        None,
+    );
+    if current.stdout.replace('\r', "").trim() == "1" {
+        return;
+    }
+    runner.run(
+        "adb",
+        &[
+            "-s",
+            serial,
+            "shell",
+            "cmd",
+            "connectivity",
+            "airplane-mode",
+            "enable",
+        ],
+        None,
+    );
+}
+
 pub fn is_no_booted_error(r: &RunResult) -> bool {
     let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
     t.contains("no devices are booted")
@@ -212,6 +251,91 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn ensure_airplane_mode_enables_when_off() {
+        use crate::runner::Runner;
+        use std::cell::RefCell;
+
+        struct Rec {
+            calls: RefCell<Vec<Vec<String>>>,
+        }
+        impl Runner for Rec {
+            fn run(&self, _: &str, args: &[&str], _: Option<&str>) -> RunResult {
+                self.calls
+                    .borrow_mut()
+                    .push(args.iter().map(|a| (*a).to_string()).collect());
+                if args.iter().any(|a| *a == "airplane_mode_on") {
+                    return RunResult::new(0, "0".into(), String::new());
+                }
+                RunResult::new(0, String::new(), String::new())
+            }
+            fn which(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        let rec = Rec {
+            calls: RefCell::new(Vec::new()),
+        };
+        ensure_airplane_mode(&rec, Some("emulator-5554"));
+        let calls = rec.calls.borrow();
+        assert!(calls.iter().any(|c| c.iter().any(|a| a == "enable")));
+        assert!(calls[0].iter().any(|a| a == "emulator-5554"));
+    }
+
+    #[test]
+    fn ensure_airplane_mode_skips_enable_when_already_on() {
+        use crate::runner::Runner;
+        use std::cell::RefCell;
+
+        struct Rec {
+            calls: RefCell<Vec<Vec<String>>>,
+        }
+        impl Runner for Rec {
+            fn run(&self, _: &str, args: &[&str], _: Option<&str>) -> RunResult {
+                self.calls
+                    .borrow_mut()
+                    .push(args.iter().map(|a| (*a).to_string()).collect());
+                RunResult::new(0, "1".into(), String::new())
+            }
+            fn which(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        let rec = Rec {
+            calls: RefCell::new(Vec::new()),
+        };
+        ensure_airplane_mode(&rec, Some("emulator-5554"));
+        assert!(rec
+            .calls
+            .borrow()
+            .iter()
+            .all(|c| !c.iter().any(|a| a == "enable")));
+    }
+
+    #[test]
+    fn ensure_airplane_mode_without_serial_is_a_noop() {
+        use crate::runner::Runner;
+        use std::cell::Cell;
+
+        struct Rec {
+            calls: Cell<u32>,
+        }
+        impl Runner for Rec {
+            fn run(&self, _: &str, _: &[&str], _: Option<&str>) -> RunResult {
+                self.calls.set(self.calls.get() + 1);
+                RunResult::new(0, String::new(), String::new())
+            }
+            fn which(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        let rec = Rec {
+            calls: Cell::new(0),
+        };
+        ensure_airplane_mode(&rec, None);
+        assert_eq!(rec.calls.get(), 0);
+    }
+
     fn stdout_is_success_true_for_success_ci() {
         assert!(stdout_is_success(&r("Success", "")));
         assert!(stdout_is_success(&r("success", "")));

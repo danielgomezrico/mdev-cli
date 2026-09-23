@@ -19,8 +19,8 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 
 | Command | Alias | Description |
 |---|---|---|
-| `mdev uninstall` | `u` | Uninstall the app from connected devices/emulators |
-| `mdev clear` | `c` | Clear app data and restart on connected devices |
+| `mdev uninstall` | `u` | Uninstall the app from connected devices/emulators. Android is put in airplane mode first — `pm uninstall` only succeeds while the cell radio is off |
+| `mdev clear` | `c` | Clear app data and restart on connected devices. Android is put in airplane mode first — `pm clear` only succeeds while the cell radio is off |
 | `mdev kill` | `x` | Kill the running process for the current project — force-stops the app on devices (Flutter/Android/iOS) or kills the dev server (Node, Rust, Go, Ruby/Rails, Python) |
 | `mdev reboot` | `r` | Restart the running process — relaunches the app on devices (Flutter/Android/iOS), or kills the dev server and prints its start command (Node, Rust, Go, Ruby/Rails, Python) |
 | `mdev purge` | `p` | Purge build artifacts and caches across Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, and Python projects |

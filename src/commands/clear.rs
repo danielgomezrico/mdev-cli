@@ -79,6 +79,7 @@ fn clear_android(
     };
     let label = device_id.unwrap_or("android").to_string();
     let pb = logger.progress(&format!("Clearing {}...", label));
+    device_outcome::ensure_airplane_mode(runner, device_id);
 
     let clear_result = if let Some(id) = device_id {
         runner.run("adb", &["-s", id, "shell", "pm", "clear", &pkg], None)
@@ -250,10 +251,20 @@ mod tests {
         clear: RunResult,
         pm_path: Option<RunResult>,
         monkey: Option<RunResult>,
+        calls: std::cell::RefCell<Vec<Vec<String>>>,
     }
 
     impl Runner for MockRunner {
         fn run(&self, _exe: &str, args: &[&str], _: Option<&str>) -> RunResult {
+            self.calls
+                .borrow_mut()
+                .push(args.iter().map(|a| (*a).to_string()).collect());
+            if args.iter().any(|a| *a == "airplane_mode_on") {
+                return RunResult::new(0, "0".into(), String::new());
+            }
+            if args.iter().any(|a| *a == "airplane-mode") {
+                return RunResult::new(0, String::new(), String::new());
+            }
             if args.iter().any(|a| *a == "uninstall") {
                 return self.uninstall.clone();
             }
@@ -284,6 +295,7 @@ mod tests {
             clear: RunResult::new(1, "Failed".into(), String::new()),
             pm_path: None,
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = clear_android(
             &runner,
@@ -302,6 +314,7 @@ mod tests {
             clear: RunResult::new(0, "Failed".into(), String::new()),
             pm_path: None,
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = clear_android(
             &runner,
@@ -320,6 +333,7 @@ mod tests {
             clear: RunResult::new(0, "Success".into(), String::new()),
             pm_path: None,
             monkey: Some(RunResult::new(0, String::new(), String::new())),
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = clear_android(
             &runner,
@@ -338,6 +352,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "Unknown package: com.example.app".into()),
             pm_path: None,
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = clear_android(
             &runner,
@@ -360,6 +375,7 @@ mod tests {
             ),
             pm_path: None,
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = clear_android(
             &runner,
@@ -378,6 +394,7 @@ mod tests {
             clear: RunResult::new(1, String::new(), "adb: no devices/emulators found".into()),
             pm_path: None,
             monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
         };
         let got = clear_android(
             &runner,
@@ -387,5 +404,62 @@ mod tests {
             false,
         );
         assert_eq!(got, None);
+    }
+
+    #[test]
+    fn clear_android_enables_airplane_mode_before_pm_clear() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "unexpected".into()),
+            clear: RunResult::new(0, "Success".into(), String::new()),
+            pm_path: None,
+            monkey: Some(RunResult::new(0, String::new(), String::new())),
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        let got = clear_android(
+            &runner,
+            &app(ProjectType::Android),
+            Some("emulator-5554"),
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, Some(true));
+        let calls = runner.calls.borrow();
+        let enable = calls
+            .iter()
+            .position(|c| c.iter().any(|a| a == "airplane-mode"))
+            .expect("airplane mode enable");
+        let clear = calls
+            .iter()
+            .position(|c| c.windows(2).any(|w| w == ["pm", "clear"]))
+            .expect("pm clear");
+        assert!(enable < clear);
+    }
+
+    #[test]
+    fn clear_android_without_serial_does_not_touch_airplane_mode() {
+        let runner = MockRunner {
+            uninstall: RunResult::new(1, String::new(), "unexpected".into()),
+            clear: RunResult::new(
+                1,
+                String::new(),
+                "adb: more than one device/emulator".into(),
+            ),
+            pm_path: None,
+            monkey: None,
+            calls: std::cell::RefCell::new(Vec::new()),
+        };
+        let got = clear_android(
+            &runner,
+            &app(ProjectType::Android),
+            None,
+            &Logger::new(),
+            false,
+        );
+        assert_eq!(got, None);
+        assert!(runner
+            .calls
+            .borrow()
+            .iter()
+            .all(|c| !c.iter().any(|a| a == "airplane-mode")));
     }
 }
