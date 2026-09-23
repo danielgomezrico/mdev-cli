@@ -137,15 +137,18 @@ fn fix_device(
         )),
     }
 
-    if clear_radio_blocks(adb, runner, serial, logger) && wait_healthy(adb, runner, serial, timings)
+    if enter_airplane_mode(adb, runner, serial, logger)
+        && wait_healthy(adb, runner, serial, timings)
     {
         logger.success(&format!(
-            "{}: network back after re-enabling the radios",
+            "{}: network back after enabling airplane mode",
             serial
         ));
         return true;
     }
 
+    // The toggle is the second attempt, and it only lands if airplane mode
+    // was already on — otherwise the first step would have returned.
     logger.info(&format!("{}: toggling Wi-Fi", serial));
     toggle_wifi(adb, runner, serial);
     if wait_healthy(adb, runner, serial, timings) {
@@ -182,6 +185,9 @@ fn fix_device(
 
     match restart_with_dns(adb, runner, serial, &avd, &servers, timings, logger) {
         Ok(new_serial) => {
+            // A cold boot comes up with the cell radio on, which is the state
+            // this repair cannot succeed in.
+            enter_airplane_mode(adb, runner, &new_serial, logger);
             if wait_healthy(adb, runner, &new_serial, timings) {
                 logger.success(&format!(
                     "{}: network back after a cold boot with DNS {}",
@@ -226,28 +232,23 @@ fn wait_healthy(adb: &str, runner: &dyn Runner, serial: &str, timings: &Timings)
     false
 }
 
-/// Leaves airplane mode and re-enables Wi-Fi. Returns whether anything changed.
-fn clear_radio_blocks(adb: &str, runner: &dyn Runner, serial: &str, logger: &Logger) -> bool {
-    let mut changed = false;
-
+/// Puts the guest in airplane mode before any other repair. The emulator's
+/// user-mode network only comes back while the cell radio is off; leaving
+/// airplane mode on is what makes the later steps succeed. Returns whether
+/// the command was issued — already-on is a no-op, not a change.
+fn enter_airplane_mode(adb: &str, runner: &dyn Runner, serial: &str, logger: &Logger) -> bool {
     if setting(adb, runner, serial, "airplane_mode_on") == "1" {
-        logger.info(&format!("{}: leaving airplane mode", serial));
-        shell(
-            adb,
-            runner,
-            serial,
-            &["cmd", "connectivity", "airplane-mode", "disable"],
-        );
-        changed = true;
+        logger.info(&format!("{}: already in airplane mode", serial));
+        return false;
     }
-
-    if setting(adb, runner, serial, "wifi_on") == "0" {
-        logger.info(&format!("{}: enabling Wi-Fi", serial));
-        shell(adb, runner, serial, &["svc", "wifi", "enable"]);
-        changed = true;
-    }
-
-    changed
+    logger.info(&format!("{}: enabling airplane mode", serial));
+    shell(
+        adb,
+        runner,
+        serial,
+        &["cmd", "connectivity", "airplane-mode", "enable"],
+    );
+    true
 }
 
 /// Forces ConnectivityService to re-run validation, which is what clears the "!"
@@ -512,6 +513,8 @@ mod tests {
         dns_ok: Cell<bool>,
         wifi_on: Cell<bool>,
         airplane: Cell<bool>,
+        /// DNS starts answering once airplane mode is on.
+        heals_on_airplane: bool,
         /// DNS starts answering after the Wi-Fi toggle.
         heals_on_wifi_toggle: bool,
         /// DNS starts answering after the emulator cold-boots.
@@ -526,7 +529,8 @@ mod tests {
             Self {
                 dns_ok: Cell::new(true),
                 wifi_on: Cell::new(true),
-                airplane: Cell::new(false),
+                airplane: Cell::new(true),
+                heals_on_airplane: false,
                 heals_on_wifi_toggle: false,
                 heals_on_restart: false,
                 running: Cell::new(true),
@@ -572,8 +576,11 @@ mod tests {
             if command.contains("settings get global wifi_on") {
                 return RunResult::success(if self.wifi_on.get() { "1" } else { "0" }.into());
             }
-            if command.contains("airplane-mode disable") {
-                self.airplane.set(false);
+            if command.contains("airplane-mode enable") {
+                self.airplane.set(true);
+                if self.heals_on_airplane {
+                    self.dns_ok.set(true);
+                }
                 return RunResult::success(String::new());
             }
             if command.contains("svc wifi disable") {
@@ -588,7 +595,8 @@ mod tests {
                 return RunResult::success(String::new());
             }
             if command.contains(&format!("ping -c 1 -W 2 {}", GATEWAY)) {
-                let reachable = self.wifi_on.get() && !self.airplane.get();
+                // The user-mode NIC answers only while the cell radio is off.
+                let reachable = self.wifi_on.get() && self.airplane.get();
                 return RunResult::success(if reachable {
                     "64 bytes from 10.0.2.2: icmp_seq=1 ttl=255".into()
                 } else {
@@ -628,6 +636,8 @@ mod tests {
                 .borrow_mut()
                 .push(format!("spawn {} {}", executable, args.join(" ")));
             self.running.set(true);
+            // A cold boot brings the radios back up.
+            self.airplane.set(false);
             if self.heals_on_restart {
                 self.dns_ok.set(true);
             }
@@ -668,28 +678,31 @@ mod tests {
     }
 
     #[test]
-    fn disabled_wifi_is_re_enabled_without_restarting() {
+    fn airplane_mode_is_enabled_before_any_other_repair() {
         let runner = ScriptedRunner {
-            wifi_on: Cell::new(false),
-            ..ScriptedRunner::healthy()
+            airplane: Cell::new(false),
+            heals_on_airplane: true,
+            ..ScriptedRunner::dns_broken()
         };
         let code = fix(&args(), &runner, &instant_timings());
 
         assert_eq!(code, 0);
-        assert!(runner.called("svc wifi enable"));
+        assert!(runner.called("airplane-mode enable"));
+        assert!(!runner.called("svc wifi disable"));
         assert!(!runner.called("emu kill"));
     }
 
     #[test]
-    fn airplane_mode_is_turned_off_first() {
+    fn already_in_airplane_mode_skips_the_enable_and_continues() {
         let runner = ScriptedRunner {
-            airplane: Cell::new(true),
-            ..ScriptedRunner::healthy()
+            heals_on_wifi_toggle: true,
+            ..ScriptedRunner::dns_broken()
         };
         let code = fix(&args(), &runner, &instant_timings());
 
         assert_eq!(code, 0);
-        assert!(runner.called("airplane-mode disable"));
+        assert!(!runner.called("airplane-mode enable"));
+        assert!(runner.called("svc wifi disable"));
         assert!(!runner.called("emu kill"));
     }
 
@@ -718,6 +731,8 @@ mod tests {
         assert_eq!(code, 0);
         assert!(runner.called("emu kill"));
         assert!(runner.called("-avd Pixel_9 -dns-server 8.8.8.8,1.1.1.1 -no-snapshot-load"));
+        // Cold boot clears airplane mode; the repair puts it back before probing.
+        assert!(runner.called("airplane-mode enable"));
     }
 
     #[test]

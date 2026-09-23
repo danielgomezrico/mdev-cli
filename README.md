@@ -159,7 +159,7 @@ An Android emulator forwards DNS to whatever resolvers the host had **when it bo
 
 `mdev fix android` probes for that state and applies the smallest repair that works, in order:
 
-1. Leave airplane mode and re-enable Wi-Fi if either is off.
+1. Enable airplane mode if it is off. The guest repair only succeeds while the cell radio is off, so this runs before every later step and again after a cold boot, which comes up with radios on.
 2. Toggle Wi-Fi, which forces Android to re-run network validation and clears a stale "!".
 3. Cold-boot the AVD with `-dns-server <host resolvers>` — the only fix for a dead resolver, since the emulator re-reads DNS at startup. Loopback resolvers are dropped (the guest cannot reach them) and `8.8.8.8,1.1.1.1` fill the remaining slots.
 
