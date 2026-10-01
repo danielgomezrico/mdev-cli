@@ -108,37 +108,7 @@ fn clear_android(
         return Some(false);
     }
 
-    let launch_result = if let Some(id) = device_id {
-        runner.run(
-            "adb",
-            &[
-                "-s",
-                id,
-                "shell",
-                "monkey",
-                "-p",
-                &pkg,
-                "-c",
-                "android.intent.category.LAUNCHER",
-                "1",
-            ],
-            None,
-        )
-    } else {
-        runner.run(
-            "adb",
-            &[
-                "shell",
-                "monkey",
-                "-p",
-                &pkg,
-                "-c",
-                "android.intent.category.LAUNCHER",
-                "1",
-            ],
-            None,
-        )
-    };
+    let launch_result = device_outcome::launch_android(runner, device_id, &pkg);
     if launch_result.is_success() {
         pb.finish_with_message(format!("{} Cleared and restarted {}", "✓".green(), label));
         Some(true)
@@ -274,8 +244,11 @@ mod tests {
             if args.windows(2).any(|w| w == ["pm", "clear"]) {
                 return self.clear.clone();
             }
-            if args.iter().any(|a| *a == "monkey") {
-                return self.monkey.clone().expect("monkey must not be called");
+            if args.iter().any(|a| *a == "resolve-activity") {
+                return RunResult::new(0, "com.example.app/.Main".into(), String::new());
+            }
+            if args.windows(2).any(|w| w == ["am", "start"]) {
+                return self.monkey.clone().expect("am start must not be called");
             }
             RunResult::new(1, String::new(), "unexpected".into())
         }
@@ -343,6 +316,11 @@ mod tests {
             false,
         );
         assert_eq!(got, Some(true));
+        let calls = runner.calls.borrow();
+        assert!(calls
+            .iter()
+            .any(|c| c.windows(2).any(|w| w == ["am", "start"]) && c.iter().any(|a| a == "-n")));
+        assert!(calls.iter().all(|c| !c.iter().any(|a| a == "monkey")));
     }
 
     #[test]

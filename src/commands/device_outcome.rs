@@ -45,6 +45,55 @@ pub fn stdout_is_success(r: &RunResult) -> bool {
     r.stdout.trim().eq_ignore_ascii_case("success")
 }
 
+/// Start the app's launcher activity. `adb shell monkey` exits 251 even when
+/// the activity starts, and `am start -p <pkg>` cannot resolve the launcher
+/// intent, so resolve the component and start that.
+pub fn launch_android(
+    runner: &dyn crate::runner::Runner,
+    serial: Option<&str>,
+    pkg: &str,
+) -> crate::runner::RunResult {
+    let resolved = adb(
+        runner,
+        serial,
+        &[
+            "shell",
+            "cmd",
+            "package",
+            "resolve-activity",
+            "--brief",
+            "-a",
+            "android.intent.action.MAIN",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            pkg,
+        ],
+    );
+    let component = resolved
+        .stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| line.contains('/'))
+        .map(str::to_string);
+    let Some(component) = component else {
+        return crate::runner::RunResult::new(1, resolved.stdout, resolved.stderr);
+    };
+    adb(runner, serial, &["shell", "am", "start", "-n", &component])
+}
+
+fn adb(
+    runner: &dyn crate::runner::Runner,
+    serial: Option<&str>,
+    args: &[&str],
+) -> crate::runner::RunResult {
+    let mut full: Vec<&str> = Vec::new();
+    if let Some(serial) = serial {
+        full.extend(["-s", serial]);
+    }
+    full.extend(args);
+    runner.run("adb", &full, None)
+}
+
 /// `pm clear` and `pm uninstall` only succeed while the cell radio is off.
 /// Enable airplane mode on this serial before either command. Already-on is a
 /// no-op. A missing serial means adb has not picked a device yet — skip, so
@@ -252,6 +301,62 @@ mod tests {
 
     #[test]
     #[test]
+    #[test]
+    fn launch_android_starts_resolved_component() {
+        use crate::runner::Runner;
+        use std::cell::RefCell;
+
+        struct Rec {
+            calls: RefCell<Vec<Vec<String>>>,
+        }
+        impl Runner for Rec {
+            fn run(&self, _: &str, args: &[&str], _: Option<&str>) -> RunResult {
+                self.calls
+                    .borrow_mut()
+                    .push(args.iter().map(|a| (*a).to_string()).collect());
+                if args.iter().any(|a| *a == "resolve-activity") {
+                    return RunResult::new(
+                        0,
+                        "priority=0\ncom.example.app/.Main".into(),
+                        String::new(),
+                    );
+                }
+                RunResult::new(0, "Starting".into(), String::new())
+            }
+            fn which(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        let rec = Rec {
+            calls: RefCell::new(Vec::new()),
+        };
+        let result = launch_android(&rec, Some("emulator-5554"), "com.example.app");
+        assert!(result.is_success());
+        let calls = rec.calls.borrow();
+        let start = calls
+            .iter()
+            .find(|c| c.windows(2).any(|w| w == ["am", "start"]))
+            .expect("am start");
+        assert!(start.iter().any(|a| a == "com.example.app/.Main"));
+    }
+
+    #[test]
+    fn launch_android_fails_when_no_component() {
+        use crate::runner::Runner;
+
+        struct Rec;
+        impl Runner for Rec {
+            fn run(&self, _: &str, _: &[&str], _: Option<&str>) -> RunResult {
+                RunResult::new(0, "No activity found".into(), String::new())
+            }
+            fn which(&self, _: &str) -> Option<String> {
+                None
+            }
+        }
+        let result = launch_android(&Rec, None, "com.missing");
+        assert!(!result.is_success());
+    }
+
     fn ensure_airplane_mode_enables_when_off() {
         use crate::runner::Runner;
         use std::cell::RefCell;

@@ -125,37 +125,7 @@ fn restart_on(
                 return Some(false);
             }
 
-            let launch = if let Some(id) = device_id {
-                runner.run(
-                    "adb",
-                    &[
-                        "-s",
-                        id,
-                        "shell",
-                        "monkey",
-                        "-p",
-                        &pkg,
-                        "-c",
-                        "android.intent.category.LAUNCHER",
-                        "1",
-                    ],
-                    None,
-                )
-            } else {
-                runner.run(
-                    "adb",
-                    &[
-                        "shell",
-                        "monkey",
-                        "-p",
-                        &pkg,
-                        "-c",
-                        "android.intent.category.LAUNCHER",
-                        "1",
-                    ],
-                    None,
-                )
-            };
+            let launch = device_outcome::launch_android(runner, device_id, &pkg);
             if launch.is_success() {
                 pb.finish_with_message(format!("{} Restarted app on {}", "✓".green(), label));
                 Some(true)
