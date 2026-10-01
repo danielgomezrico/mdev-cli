@@ -44,6 +44,11 @@ pub fn run(args: &ClearArgs, runner: &dyn Runner) -> i32 {
         };
     }
 
+    if app_info.android_package_id.is_some() {
+        if let Err(code) = device_op::ensure_android_running(runner, &logger) {
+            return code;
+        }
+    }
     device_op::run_on_all_platforms(runner, &app_info, &logger, args.verbose, clear_on)
 }
 
@@ -262,7 +267,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_android_exit1_failed_is_not_success() {
+    fn clear_android_bare_failed_means_not_installed() {
         let runner = MockRunner {
             uninstall: RunResult::new(1, String::new(), "unexpected".into()),
             clear: RunResult::new(1, "Failed".into(), String::new()),
@@ -277,11 +282,11 @@ mod tests {
             &Logger::new(),
             false,
         );
-        assert_eq!(got, Some(false));
+        assert_eq!(got, Some(true));
     }
 
     #[test]
-    fn clear_android_exit0_failed_stdout_is_not_success() {
+    fn clear_android_exit0_failed_stdout_is_not_installed() {
         let runner = MockRunner {
             uninstall: RunResult::new(1, String::new(), "unexpected".into()),
             clear: RunResult::new(0, "Failed".into(), String::new()),
@@ -296,7 +301,7 @@ mod tests {
             &Logger::new(),
             false,
         );
-        assert_eq!(got, Some(false));
+        assert_eq!(got, Some(true));
     }
 
     #[test]

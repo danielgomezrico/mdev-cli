@@ -31,10 +31,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Uninstall the app from connected devices
+    /// Uninstall the app from connected devices.
+    ///
+    /// Starts an Android emulator when none is attached.
     #[command(visible_alias = "u")]
     Uninstall(UninstallArgs),
-    /// Clear app data and restart on connected devices
+    /// Clear app data and restart on connected devices.
+    ///
+    /// Starts an Android emulator when none is attached.
     #[command(visible_alias = "c")]
     Clear(ClearArgs),
     /// Kill the running process for the current project (app on devices, or dev server)

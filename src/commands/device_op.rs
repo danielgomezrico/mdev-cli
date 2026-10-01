@@ -1,3 +1,5 @@
+use crate::commands::simulator::android;
+use crate::commands::tool_locator;
 use crate::device_manager::DeviceManager;
 use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform};
@@ -59,6 +61,40 @@ where
         PlatformOutcome::AllOk
     } else {
         PlatformOutcome::Failed
+    }
+}
+
+/// True when `adb devices` already lists something attached. A bare
+/// `mdev clear` / `mdev uninstall` uses this to decide whether it has to boot
+/// an emulator first. Flutter's device list is not consulted: it misses an
+/// emulator that adb already sees.
+pub fn android_device_attached(runner: &dyn Runner) -> bool {
+    let Some(adb) = tool_locator::adb(runner) else {
+        return false;
+    };
+    let listed = runner.run(&adb, &["devices"], None);
+    listed.stdout.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        let serial = parts.next().unwrap_or("");
+        let state = parts.next().unwrap_or("");
+        !serial.is_empty()
+            && serial != "List"
+            && matches!(state, "device" | "unauthorized" | "offline")
+    })
+}
+
+/// Boot an Android emulator when none is attached. Returns the boot exit code
+/// when a boot was required and failed; `Ok(())` when a device is ready.
+pub fn ensure_android_running(runner: &dyn Runner, logger: &Logger) -> Result<(), i32> {
+    if android_device_attached(runner) {
+        return Ok(());
+    }
+    logger.info("No running Android device — starting an emulator");
+    let code = android::ensure_booted(runner);
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(code)
     }
 }
 
@@ -318,6 +354,26 @@ mod tests {
             android.map(|s| s.to_string()),
             ios.map(|s| s.to_string()),
         )
+    }
+
+    #[test]
+    fn android_device_attached_false_when_only_header() {
+        let runner = MockRunner {
+            run_result: RunResult::new(0, "List of devices attached".into(), String::new()),
+        };
+        assert!(!android_device_attached(&runner));
+    }
+
+    #[test]
+    fn android_device_attached_true_for_emulator_device_line() {
+        let runner = MockRunner {
+            run_result: RunResult::new(
+                0,
+                "List of devices attached\nemulator-5554\tdevice".into(),
+                String::new(),
+            ),
+        };
+        assert!(android_device_attached(&runner));
     }
 
     #[test]

@@ -45,6 +45,11 @@ pub fn run(args: &UninstallArgs, runner: &dyn Runner) -> i32 {
         };
     }
 
+    if app_info.android_package_id.is_some() {
+        if let Err(code) = device_op::ensure_android_running(runner, &logger) {
+            return code;
+        }
+    }
     device_op::run_on_all_platforms(runner, &app_info, &logger, args.verbose, uninstall_on)
 }
 

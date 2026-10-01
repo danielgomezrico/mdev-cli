@@ -37,7 +37,8 @@ pub fn should_enumerate(r: &RunResult) -> bool {
 /// uninstall/clear, which both want the app gone.
 pub fn is_not_installed_error(r: &RunResult) -> bool {
     let t = format!("{}\n{}", r.stderr, r.stdout).to_lowercase();
-    t.contains("unknown package")
+    // `pm clear` of a missing package prints a bare "Failed".
+    t.contains("unknown package") || r.stdout.trim().eq_ignore_ascii_case("failed")
 }
 
 /// ADB / `pm` printed a sole success token (install/uninstall/clear).
@@ -279,8 +280,9 @@ mod tests {
     }
 
     #[test]
-    fn is_not_installed_error_false_for_trimmed_failed() {
-        assert!(!is_not_installed_error(&r("Failed", "")));
+    fn is_not_installed_error_true_for_bare_failed() {
+        // `pm clear` of a package that is not on the device.
+        assert!(is_not_installed_error(&r("Failed", "")));
     }
 
     #[test]

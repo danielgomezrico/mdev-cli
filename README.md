@@ -101,6 +101,9 @@ make install
 Run any command from within your project directory. `uninstall`, `clear`, `keystore`, `emulator`, and `doctor` target Flutter/Android/iOS; `kill`, `reboot`, and `purge` work across every supported ecosystem (see the table above).
 
 ```sh
+# Uninstall from whatever is attached. Boots an Android emulator when nothing is.
+mdev uninstall
+
 # Uninstall from a specific device
 mdev uninstall -d <device-id>
 

@@ -48,6 +48,20 @@ pub fn run(args: &AndroidArgs, runner: &dyn Runner) -> i32 {
     start(args, runner, &PollConfig::serial(), &PollConfig::boot())
 }
 
+/// Boot the default AVD and wait until Android finishes starting. Reuses an
+/// emulator that is already hosting that AVD.
+pub fn ensure_booted(runner: &dyn Runner) -> i32 {
+    start(
+        &AndroidArgs {
+            avd: None,
+            off: false,
+        },
+        runner,
+        &PollConfig::serial(),
+        &PollConfig::boot(),
+    )
+}
+
 /// Kills the emulator hosting `--avd`, or every running emulator when it is omitted.
 fn stop(args: &AndroidArgs, runner: &dyn Runner) -> i32 {
     let logger = Logger::new();
@@ -118,7 +132,7 @@ fn start(
         Some(avd) => avd,
         None => {
             let listed = runner.run(&emulator, &["-list-avds"], None);
-            match parse_avd_names(&listed.stdout).into_iter().next() {
+            match pick_avd(&parse_avd_names(&listed.stdout)) {
                 Some(avd) => avd,
                 None => {
                     logger.err("No AVDs found — create one with avdmanager or Android Studio");
@@ -251,6 +265,28 @@ pub fn log_path_for(avd: &str) -> PathBuf {
     std::env::temp_dir().join(format!("mdev-emulator-{}.log", avd))
 }
 
+/// Prefer an AVD whose data image still has room. `emulator -list-avds` is
+/// alphabetical, so a full leftover image named first would always win.
+fn pick_avd(names: &[String]) -> Option<String> {
+    names
+        .iter()
+        .min_by_key(|name| avd_userdata_len(name))
+        .cloned()
+}
+
+fn avd_userdata_len(name: &str) -> u64 {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = PathBuf::from(home)
+        .join(".android")
+        .join("avd")
+        .join(format!("{name}.avd"));
+    ["userdata-qemu.img.qcow2", "userdata-qemu.img"]
+        .iter()
+        .find_map(|file| std::fs::metadata(dir.join(file)).ok())
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+}
+
 /// AVD names from `emulator -list-avds`, dropping the log lines it interleaves.
 fn parse_avd_names(stdout: &str) -> Vec<String> {
     stdout
@@ -287,6 +323,13 @@ pub fn parse_avd_reply(stdout: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pick_avd_skips_the_full_image() {
+        let names = vec!["Pixel_9".to_string(), "mdev_dummy".to_string()];
+        let picked = pick_avd(&names);
+        assert_eq!(picked.as_deref(), Some("mdev_dummy"));
+    }
     use crate::runner::{BackgroundProcess, RunResult};
     use std::cell::{Cell, RefCell};
 
