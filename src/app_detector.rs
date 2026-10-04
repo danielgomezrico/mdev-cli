@@ -653,46 +653,73 @@ fn detect_ios_bundle_id(root: &Path) -> Option<String> {
 }
 
 fn parse_bundle_id_from_pbxproj(content: &str) -> Option<String> {
-    let release_markers = ["name = Release;", r#"name = "Release";"#, "/* Release */"];
-    let debug_markers = ["name = Debug;", r#"name = "Debug";"#, "/* Debug */"];
-
-    let mut in_release_block = false;
-    let mut release_value: Option<String> = None;
-    let mut fallback_value: Option<String> = None;
-
+    // A Flutter Runner.xcodeproj lists RunnerTests before the app target, and
+    // both have a Release configuration. The first Release id is the test
+    // bundle. Skip those, plus widget/extension suffixes, and keep the app id.
+    let mut ids: Vec<String> = Vec::new();
     for line in content.lines() {
-        // Detect block transitions
-        let is_release = release_markers.iter().any(|m| line.contains(m));
-        let is_debug = debug_markers.iter().any(|m| line.contains(m));
-        if is_release {
-            in_release_block = true;
-        } else if is_debug {
-            in_release_block = false;
+        let Some(caps) = bundle_id_pattern().captures(line) else {
+            continue;
+        };
+        let Some(m) = caps.get(1) else {
+            continue;
+        };
+        let value = m.as_str().trim().trim_matches('"').to_string();
+        if value.starts_with("$(") || ids.contains(&value) {
+            continue;
         }
-
-        if let Some(caps) = bundle_id_pattern().captures(line) {
-            if let Some(m) = caps.get(1) {
-                let value = m.as_str().trim().to_string();
-                // Skip variable substitutions like $(PRODUCT_BUNDLE_IDENTIFIER)
-                if value.starts_with("$(") {
-                    continue;
-                }
-                if in_release_block && release_value.is_none() {
-                    release_value = Some(value.clone());
-                }
-                if fallback_value.is_none() {
-                    fallback_value = Some(value);
-                }
-            }
-        }
+        ids.push(value);
     }
+    ids.iter()
+        .find(|id| !is_companion_bundle_id(id))
+        .cloned()
+        .or_else(|| ids.into_iter().next())
+}
 
-    release_value.or(fallback_value)
+fn is_companion_bundle_id(id: &str) -> bool {
+    let lower = id.to_ascii_lowercase();
+    lower.rsplit('.').next().is_some_and(|suffix| {
+        matches!(
+            suffix,
+            "runnertests"
+                | "tests"
+                | "uitests"
+                | "widget"
+                | "widgetsextension"
+                | "shareextension"
+                | "notificationextension"
+                | "intents"
+                | "watchkitapp"
+                | "watchkitextension"
+        )
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flutter_bundle_id_skips_runner_tests_listed_first() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file_with("pubspec.yaml", "name: inkto\n"),
+                Marker::file_with(
+                    "android/app/build.gradle.kts",
+                    "android {\n    namespace = \"app.inkto\"\n    defaultConfig {\n        applicationId = \"app.inkto.mobile\"\n    }\n}\n",
+                ),
+                Marker::file_with(
+                    "ios/Runner.xcodeproj/project.pbxproj",
+                    "PRODUCT_BUNDLE_IDENTIFIER = app.inkto.mobile.RunnerTests;\nname = Release;\nPRODUCT_BUNDLE_IDENTIFIER = app.inkto.mobile;\nname = Release;\n",
+                ),
+            ],
+        );
+        let info = AppDetector::new().detect(tmp.path());
+        assert_eq!(info.android_package_id.as_deref(), Some("app.inkto.mobile"));
+        assert_eq!(info.ios_bundle_id.as_deref(), Some("app.inkto.mobile"));
+    }
     use std::fs;
     use tempfile::TempDir;
 
