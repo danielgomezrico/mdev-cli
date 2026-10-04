@@ -302,8 +302,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
-    #[test]
     fn launch_android_starts_resolved_component() {
         use crate::runner::Runner;
         use std::cell::RefCell;

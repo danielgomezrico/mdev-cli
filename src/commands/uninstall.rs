@@ -6,7 +6,7 @@ use crate::commands::device_op;
 use crate::commands::device_outcome;
 use crate::logger::Logger;
 use crate::models::{AppInfo, DevicePlatform, ProjectType};
-use crate::runner::Runner;
+use crate::runner::{RunResult, Runner};
 
 #[derive(Args, Debug)]
 pub struct UninstallArgs {
@@ -77,15 +77,33 @@ fn uninstall_on(
             let label = device_id.unwrap_or("android");
             let pb = logger.progress(&format!("Uninstalling from {}...", label));
             device_outcome::ensure_airplane_mode(runner, device_id);
-            let result = if let Some(id) = device_id {
-                runner.run("adb", &["-s", id, "uninstall", &pkg], None)
-            } else {
-                runner.run("adb", &["uninstall", &pkg], None)
-            };
+            // Flavor installs keep a suffix the base id does not have. Try
+            // each one; a missing flavor is not a failure.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let mut packages = crate::app_detector::android_package_ids(&cwd);
+            if packages.is_empty() {
+                packages.push(pkg.clone());
+            }
+            let mut result = RunResult::new(1, String::new(), "Unknown package".into());
+            let mut any_removed = false;
+            for candidate in &packages {
+                result = if let Some(id) = device_id {
+                    runner.run("adb", &["-s", id, "uninstall", candidate], None)
+                } else {
+                    runner.run("adb", &["uninstall", candidate], None)
+                };
+                if device_id.is_none() && device_outcome::should_enumerate(&result) {
+                    pb.finish_and_clear();
+                    return None;
+                }
+                if device_outcome::stdout_is_success(&result) {
+                    any_removed = true;
+                }
+            }
             if device_id.is_none() && device_outcome::should_enumerate(&result) {
                 pb.finish_and_clear();
                 None
-            } else if device_outcome::stdout_is_success(&result) {
+            } else if any_removed || device_outcome::stdout_is_success(&result) {
                 pb.finish_with_message(format!("{} Uninstalled from {}", "✓".green(), label));
                 Some(true)
             } else if device_outcome::is_not_installed_error(&result) {

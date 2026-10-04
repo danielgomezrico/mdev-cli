@@ -591,6 +591,56 @@ fn captured(re: &Regex, text: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
+/// Base application id plus each `applicationIdSuffix` flavor. A `dev` flavor
+/// installs as `<base>.dev`; uninstalling only the base id reports success
+/// while that package stays on the device.
+pub fn android_package_ids(root: &Path) -> Vec<String> {
+    let Some(base) = detect_android_id_in_flutter_project(root).or_else(|| detect_android_id(root))
+    else {
+        return Vec::new();
+    };
+    let mut ids = vec![base.clone()];
+    for suffix in application_id_suffixes(root) {
+        let flavored = format!("{base}{suffix}");
+        if !ids.contains(&flavored) {
+            ids.push(flavored);
+        }
+    }
+    ids
+}
+
+fn application_id_suffixes(root: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    for dir in [
+        root.join("android").join("app"),
+        root.join("app"),
+        root.join("android"),
+        root.to_path_buf(),
+    ] {
+        collect_gradle_kotlin_files(&dir, 0, &mut files);
+    }
+    let mut suffixes = Vec::new();
+    for file in files {
+        let Ok(content) = fs::read_to_string(&file) else {
+            continue;
+        };
+        for caps in application_id_suffix_pattern().captures_iter(&content) {
+            let Some(suffix) = caps.get(1).map(|m| m.as_str().to_string()) else {
+                continue;
+            };
+            if !suffixes.contains(&suffix) {
+                suffixes.push(suffix);
+            }
+        }
+    }
+    suffixes
+}
+
+fn application_id_suffix_pattern() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"applicationIdSuffix\s*=?\s*["']([^"']+)["']"#).unwrap())
+}
+
 fn extract_application_id_from_gradle(path: &Path, _is_kts: bool) -> Option<String> {
     let content = fs::read_to_string(path).ok()?;
     // Prefer broad literal (covers bare Groovy double/single, =, and .set across both DSLs)
@@ -698,6 +748,25 @@ fn is_companion_bundle_id(id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn android_package_ids_include_flavor_suffix() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[Marker::file_with(
+                "android/app/build.gradle",
+                "android {\n    namespace \"com.telepatia.scribe\"\n    defaultConfig {\n        applicationId \"com.telepatia.scribe\"\n    }\n    productFlavors {\n        dev {\n            applicationIdSuffix \".dev\"\n        }\n    }\n}\n",
+            )],
+        );
+        assert_eq!(
+            android_package_ids(tmp.path()),
+            vec![
+                "com.telepatia.scribe".to_string(),
+                "com.telepatia.scribe.dev".to_string()
+            ]
+        );
+    }
 
     #[test]
     fn flutter_bundle_id_skips_runner_tests_listed_first() {
