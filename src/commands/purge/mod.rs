@@ -144,6 +144,7 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         if !args.no_extras {
             extras::run(args, &current_dir, args.dry_run, args.verbose);
         }
+        worktrees::run_tmp(args.dry_run, args.verbose);
         return 0;
     }
 
@@ -253,6 +254,9 @@ pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
         // availability and a default-No prompt.
         worktrees::run(args, root, runner, args.dry_run, args.verbose);
     }
+
+    // Zombie worktrees in temp dirs are project-independent — scan once.
+    worktrees::run_tmp(args.dry_run, args.verbose);
 
     // Global caches
     let home = dirs::home_dir().unwrap_or_default();

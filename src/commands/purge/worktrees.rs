@@ -129,6 +129,108 @@ pub fn run(_args: &PurgeArgs, root: &Path, runner: &dyn Runner, dry_run: bool, v
     }
 }
 
+/// Max walk depth under each temp root (root = 0).
+const TMP_MAX_DEPTH: usize = 3;
+
+/// Zombie worktree cleanup in temp dirs (`/tmp`, `/private/tmp`, `/var/tmp`,
+/// `$TMPDIR`). Run once per purge, not per project.
+///
+/// A zombie is a checkout whose `.git` file points to a gitdir that no longer
+/// exists (repo deleted, or worktree pruned) — git can no longer manage it.
+/// Live worktrees are left alone; those of scanned repos are handled by [`run`].
+/// Each batch is a default-No confirm.
+pub fn run_tmp(dry_run: bool, verbose: bool) {
+    let logger = Logger::new();
+    let zombies = prune_covered_descendants(&discover_tmp_zombies(&tmp_roots()));
+    let existing = existing_paths(&zombies);
+    if existing.is_empty() {
+        return;
+    }
+    logger.info(&format!(
+        "\n  {} zombie worktree(s) in temp dirs:",
+        existing.len().to_string().cyan()
+    ));
+    for p in &existing {
+        logger.info(&format!("    {}", p.display()));
+    }
+    delete_existing_with_confirm(
+        &existing,
+        dry_run,
+        verbose,
+        &logger,
+        Some("tmp-worktree"),
+        &format!("  Delete {} zombie worktree(s)?", existing.len()),
+    );
+}
+
+/// Existing, deduplicated (canonical) temp roots.
+fn tmp_roots() -> Vec<PathBuf> {
+    let candidates = [
+        PathBuf::from("/tmp"),
+        PathBuf::from("/private/tmp"),
+        PathBuf::from("/var/tmp"),
+        std::env::temp_dir(),
+    ];
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    candidates
+        .into_iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
+}
+
+/// Gitdir a linked-worktree `.git` file points to; `None` if `dir/.git` is
+/// not a file or has no `gitdir:` line.
+fn worktree_gitdir(dir: &Path) -> Option<PathBuf> {
+    let git = dir.join(".git");
+    if !git.is_file() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&git).ok()?;
+    let target = content.lines().find_map(|l| l.strip_prefix("gitdir:"))?;
+    let target = PathBuf::from(target.trim());
+    Some(if target.is_relative() {
+        dir.join(target)
+    } else {
+        target
+    })
+}
+
+/// Walk `roots` for linked-worktree checkouts whose gitdir is gone.
+/// Depth-bounded; skips symlinks; never descends into a worktree.
+fn discover_tmp_zombies(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut queue: Vec<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0)).collect();
+
+    while let Some((dir, depth)) = queue.pop() {
+        if depth >= TMP_MAX_DEPTH {
+            continue;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let ft = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_symlink() || !ft.is_dir() {
+                continue;
+            }
+            let path = entry.path();
+            match worktree_gitdir(&path) {
+                Some(gitdir) if !gitdir.exists() => found.push(path),
+                Some(_) => {}
+                None => queue.push((path, depth + 1)),
+            }
+        }
+    }
+
+    found.sort();
+    found
+}
+
 /// Parse `git worktree list --porcelain`. Blocks are separated by blank lines;
 /// the first block is the main working tree. Recognized attribute lines:
 /// `locked` and `bare`.
@@ -584,6 +686,51 @@ branch refs/heads/dirty
         assert!(fs_only.contains(&PathBuf::from("/repo/feature-worktree")));
         assert!(fs_only.contains(&PathBuf::from("/repo/worktrees/orphan")));
         assert!(!fs_only.contains(&PathBuf::from("/repo/.agents/wt/feature")));
+    }
+
+    fn write_git_file(dir: &Path, gitdir: &Path) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    }
+
+    #[test]
+    fn tmp_zombies_only_those_with_missing_gitdir() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let live_gitdir = root.join("repo/.git/worktrees/live");
+        fs::create_dir_all(&live_gitdir).unwrap();
+        write_git_file(&root.join("live"), &live_gitdir);
+        write_git_file(
+            &root.join("zombie"),
+            &root.join("gone/.git/worktrees/zombie"),
+        );
+        write_git_file(
+            &root.join("nested/deep-zombie"),
+            &root.join("gone/.git/worktrees/deep"),
+        );
+        // plain dir and a regular repo (.git is a directory) are not worktrees
+        mkdir(root, "plain/sub");
+        mkdir(root, "regular/.git");
+
+        let got = rels(root, &discover_tmp_zombies(&[root.to_path_buf()]));
+        assert_eq!(got, vec!["nested/deep-zombie", "zombie"]);
+    }
+
+    #[test]
+    fn tmp_zombies_resolve_relative_gitdir_and_skip_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let outside = TempDir::new().unwrap();
+        write_git_file(&outside.path().join("z"), Path::new("/nonexistent/gitdir"));
+
+        mkdir(root, "rel");
+        fs::write(root.join("rel/.git"), "gitdir: ../missing\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.path().join("z"), root.join("link")).unwrap();
+
+        let got = rels(root, &discover_tmp_zombies(&[root.to_path_buf()]));
+        assert_eq!(got, vec!["rel"]);
     }
 
     #[test]
