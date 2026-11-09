@@ -1,9 +1,10 @@
 use colored::Colorize;
 use dialoguer::{Confirm, Input, Password};
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::time::Duration;
 
-const TICKS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Spinner frames; the last entry is drawn once the indicator finishes.
+const TICKS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"];
 
 pub struct Logger;
 
@@ -80,6 +81,51 @@ impl Logger {
         pb.enable_steady_tick(Duration::from_millis(80));
         Progress(pb)
     }
+
+    /// Several live indicators stacked on screen. Caller clears it.
+    pub fn progress_group(&self) -> ProgressGroup {
+        ProgressGroup(MultiProgress::new())
+    }
+}
+
+/// Stack of indicators, one line each, redrawn together.
+pub struct ProgressGroup(MultiProgress);
+
+impl ProgressGroup {
+    /// Spinner line `⠋ prefix   message`; message truncates to the terminal.
+    pub fn spinner(&self, prefix: &str, msg: &str) -> Progress {
+        let pb = self.0.add(ProgressBar::new_spinner());
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} {prefix:<15.bold} {wide_msg}")
+                .unwrap()
+                .tick_strings(TICKS),
+        );
+        pb.set_prefix(prefix.to_string());
+        pb.set_message(msg.to_string());
+        pb.enable_steady_tick(Duration::from_millis(80));
+        Progress(pb)
+    }
+
+    /// Determinate bar line below the spinners.
+    pub fn bar(&self, total: u64, msg: &str) -> Progress {
+        let pb = self.0.add(ProgressBar::new(total));
+        pb.set_style(
+            ProgressStyle::with_template(
+                "{spinner:.cyan} [{bar:24.cyan/blue}] {pos}/{len} {wide_msg}",
+            )
+            .unwrap()
+            .progress_chars("█▓░")
+            .tick_strings(TICKS),
+        );
+        pb.set_message(msg.to_string());
+        pb.enable_steady_tick(Duration::from_millis(80));
+        Progress(pb)
+    }
+
+    /// Remove every line from the screen.
+    pub fn clear(&self) {
+        let _ = self.0.clear();
+    }
 }
 
 impl Default for Logger {
@@ -99,8 +145,16 @@ impl Progress {
     }
 
     #[allow(dead_code)]
+    pub fn set_prefix(&self, prefix: String) {
+        self.0.set_prefix(prefix);
+    }
+
     pub fn set_position(&self, pos: u64) {
         self.0.set_position(pos);
+    }
+
+    pub fn set_length(&self, len: u64) {
+        self.0.set_length(len);
     }
 
     #[allow(dead_code)]

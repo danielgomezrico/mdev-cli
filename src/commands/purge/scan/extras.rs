@@ -23,6 +23,7 @@ impl Scanner for ExtrasScanner {
         let mut out = Vec::new();
         for root in roots {
             let group = display_path(root, &ctx.home);
+            ctx.note(format!("walking {group}"));
             for (path, is_dir) in find_extras(root) {
                 let label = path
                     .strip_prefix(root)

@@ -15,6 +15,7 @@ impl Scanner for DockerScanner {
         if ctx.runner.which("docker").is_none() {
             return Vec::new();
         }
+        ctx.note("docker system df");
         let df = ctx
             .runner
             .run("docker", &["system", "df", "--format", "{{json .}}"], None);

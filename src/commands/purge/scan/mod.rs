@@ -3,6 +3,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use crate::fs_size::{dir_size, SizeMode};
@@ -10,7 +11,7 @@ use crate::models::AppInfo;
 use crate::parallel;
 use crate::runner::Runner;
 
-use super::candidate::{dedupe_covered, Candidate, Category, Size, Target};
+use super::candidate::{dedupe_covered, display_path, Candidate, Category, Size, Target};
 
 pub mod android_sdk;
 pub mod docker;
@@ -22,8 +23,28 @@ pub mod temp;
 pub mod worktrees;
 pub mod xcode;
 
+/// Something a scanner is doing right now, for the progress display.
+pub type ProgressSink<'a> = dyn Fn(&str) + Sync + 'a;
+
+/// Sink that drops every note (tests, non-interactive callers).
+pub fn silent() -> &'static ProgressSink<'static> {
+    &|_: &str| {}
+}
+
+/// What `run_all` reports while scanning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanEvent {
+    /// A scanner is working on `msg` (a path, a command…).
+    Note(Category, String),
+    /// A scanner finished with `found` candidates (unsized ones not yet sized).
+    Done(Category, usize),
+    /// `done` of `total` unsized candidates have been sized.
+    Sized { done: usize, total: usize },
+}
+
 /// Everything a scanner may need. Paths are injected so tests run on
 /// temp fixtures instead of the real home directory.
+#[derive(Clone)]
 pub struct ScanContext<'a> {
     /// `mdev purge [PATH...]` — where project artifacts are looked for.
     pub roots: &'a [PathBuf],
@@ -34,11 +55,20 @@ pub struct ScanContext<'a> {
     pub now: SystemTime,
     pub runner: &'a (dyn Runner + Sync),
     pub size_mode: SizeMode,
+    /// Receives what this scanner is doing right now.
+    pub progress: &'a ProgressSink<'a>,
 }
 
 impl<'a> ScanContext<'a> {
+    /// Size `path`, telling the progress display which path is being walked.
     pub fn size_of(&self, path: &Path) -> Size {
+        self.note(format!("sizing {}", display_path(path, &self.home)));
         Size::Bytes(dir_size(path, self.size_mode))
+    }
+
+    /// Report the current activity (shown next to the category spinner).
+    pub fn note(&self, msg: impl AsRef<str>) {
+        (self.progress)(msg.as_ref());
     }
 }
 
@@ -62,23 +92,42 @@ pub fn all_scanners() -> Vec<Box<dyn Scanner>> {
 }
 
 /// Run every scanner in parallel, size path candidates that came back
-/// unsized, drop nested duplicates. `on_done` fires as each scanner finishes.
+/// unsized, drop nested duplicates. `on_event` receives live progress.
 pub fn run_all(
     scanners: &[Box<dyn Scanner>],
     ctx: &ScanContext,
-    on_done: &(dyn Fn(Category) + Sync),
+    on_event: &(dyn Fn(ScanEvent) + Sync),
 ) -> Vec<Candidate> {
     let per_scanner: Vec<Vec<Candidate>> = parallel::map(scanners.iter().collect(), |s| {
-        let found = s.scan(ctx);
-        on_done(s.category());
+        let cat = s.category();
+        let sink = move |msg: &str| on_event(ScanEvent::Note(cat, msg.to_string()));
+        let local = ScanContext {
+            progress: &sink,
+            ..ctx.clone()
+        };
+        let found = s.scan(&local);
+        on_event(ScanEvent::Done(cat, found.len()));
         found
     });
     let flat: Vec<Candidate> = per_scanner.into_iter().flatten().collect();
     let deduped = dedupe_covered(flat);
+
+    let total = deduped
+        .iter()
+        .filter(|c| c.size == Size::Unknown && matches!(c.target, Target::Path { .. }))
+        .count();
+    on_event(ScanEvent::Sized { done: 0, total });
+    let done = AtomicUsize::new(0);
+    let quiet = ScanContext {
+        progress: silent(),
+        ..ctx.clone()
+    };
     parallel::map(deduped, |mut c| {
         if c.size == Size::Unknown {
             if let Target::Path { path, .. } = &c.target {
-                c.size = ctx.size_of(path);
+                c.size = quiet.size_of(path);
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                on_event(ScanEvent::Sized { done: n, total });
             }
         }
         c
@@ -225,6 +274,59 @@ pub(crate) mod test_support {
             now: SystemTime::now(),
             runner,
             size_mode: SizeMode::Apparent,
+            progress: silent(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{ctx, FakeRunner};
+    use super::*;
+    use crate::fs_size::SizeMode;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    struct Fixed(Vec<Candidate>);
+
+    impl Scanner for Fixed {
+        fn category(&self) -> Category {
+            Category::Logs
+        }
+        fn scan(&self, ctx: &ScanContext) -> Vec<Candidate> {
+            ctx.note("looking");
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn run_all_reports_notes_done_and_sizing() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("a");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("f"), b"12345").unwrap();
+        let cand = Candidate::new(
+            Category::Logs,
+            "g",
+            "a",
+            Target::dir(dir),
+            Size::Unknown,
+            super::super::candidate::Tier::Local,
+        );
+        let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(Fixed(vec![cand]))];
+        let runner = FakeRunner::new(&[]);
+        let roots: Vec<PathBuf> = vec![];
+        let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
+        let events: Mutex<Vec<ScanEvent>> = Mutex::new(Vec::new());
+        let out = run_all(&scanners, &c, &|e| events.lock().unwrap().push(e));
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].size, Size::Bytes(5));
+        assert_eq!(c.size_mode, SizeMode::Apparent);
+        let ev = events.into_inner().unwrap();
+        assert_eq!(ev[0], ScanEvent::Note(Category::Logs, "looking".into()));
+        assert_eq!(ev[1], ScanEvent::Done(Category::Logs, 1));
+        assert_eq!(ev[2], ScanEvent::Sized { done: 0, total: 1 });
+        assert_eq!(ev[3], ScanEvent::Sized { done: 1, total: 1 });
     }
 }

@@ -129,8 +129,18 @@ impl AppDetector {
     /// that project). Bounded by [`MAX_DISCOVERY_DEPTH`]; skips
     /// dependency/build/VCS directories. Results are sorted by path.
     pub fn discover_projects(&self, start_dir: &Path) -> Vec<(AppInfo, PathBuf)> {
+        self.discover_projects_with(start_dir, &mut |_| {})
+    }
+
+    /// [`Self::discover_projects`] reporting every directory visited, so
+    /// callers can show progress on big trees.
+    pub fn discover_projects_with(
+        &self,
+        start_dir: &Path,
+        on_visit: &mut dyn FnMut(&Path),
+    ) -> Vec<(AppInfo, PathBuf)> {
         let mut found: Vec<(AppInfo, PathBuf)> = Vec::new();
-        discover_recursive(start_dir, 0, &mut found, true);
+        discover_recursive(start_dir, 0, &mut found, true, on_visit);
         found.sort_by(|a, b| a.1.cmp(&b.1));
         found
     }
@@ -200,12 +210,14 @@ fn discover_recursive(
     depth: usize,
     out: &mut Vec<(AppInfo, PathBuf)>,
     is_scan_root: bool,
+    on_visit: &mut dyn FnMut(&Path),
 ) {
+    on_visit(dir);
     let pt = classify_dir(dir);
     let is_project = pt != ProjectType::Unknown;
 
     if is_scan_root {
-        discover_children(dir, depth, out, &pt, true);
+        discover_children(dir, depth, out, &pt, true, on_visit);
         return;
     }
 
@@ -214,7 +226,7 @@ fn discover_recursive(
         return;
     }
 
-    discover_children(dir, depth, out, &ProjectType::Unknown, false);
+    discover_children(dir, depth, out, &ProjectType::Unknown, false, on_visit);
 }
 
 fn discover_children(
@@ -223,6 +235,7 @@ fn discover_children(
     out: &mut Vec<(AppInfo, PathBuf)>,
     parent_pt: &ProjectType,
     is_scan_root: bool,
+    on_visit: &mut dyn FnMut(&Path),
 ) {
     if depth >= MAX_DISCOVERY_DEPTH {
         if is_scan_root && *parent_pt != ProjectType::Unknown {
@@ -252,7 +265,7 @@ fn discover_children(
             continue;
         }
         let before = out.len();
-        discover_recursive(&path, depth + 1, out, false);
+        discover_recursive(&path, depth + 1, out, false, on_visit);
         if out.len() > before {
             child_found = true;
         }

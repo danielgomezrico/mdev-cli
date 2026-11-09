@@ -31,6 +31,7 @@ impl Scanner for TempScanner {
 
         let owner = owner_uid(&ctx.home);
         for root in &ctx.tmp_roots {
+            ctx.note(format!("listing {}", root.display()));
             let group = display_path(root, &ctx.home);
             for (path, is_dir) in stale_entries(root, ctx.now, ctx.tmp_age, owner) {
                 let label = path

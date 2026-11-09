@@ -18,6 +18,7 @@ impl Scanner for ProjectsScanner {
         let mut out = Vec::new();
         for (info, root) in ctx.projects {
             let group = display_path(root, &ctx.home);
+            ctx.note(format!("checking {group}"));
             for (rel, tier) in project_targets(&info.project_type, root) {
                 let path = root.join(&rel);
                 if std::fs::symlink_metadata(&path).is_err() {

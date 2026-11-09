@@ -24,6 +24,7 @@ impl Scanner for WorktreesScanner {
         let mut out = Vec::new();
         for root in repo_roots(ctx) {
             let group = display_path(&root, &ctx.home);
+            ctx.note(format!("git worktree list {group}"));
             let root_str = root.to_string_lossy().into_owned();
 
             let mut git_targets: Vec<PathBuf> = Vec::new();
@@ -119,6 +120,7 @@ fn repo_roots(ctx: &ScanContext) -> Vec<PathBuf> {
 }
 
 fn is_dirty(ctx: &ScanContext, worktree: &Path) -> bool {
+    ctx.note(format!("git status {}", display_path(worktree, &ctx.home)));
     let wt = worktree.to_string_lossy();
     let status = ctx
         .runner

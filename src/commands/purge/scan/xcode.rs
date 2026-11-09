@@ -183,6 +183,7 @@ fn simulators(ctx: &ScanContext, devices_dir: &Path) -> Vec<Candidate> {
         return Vec::new();
     }
     let known: HashMap<String, SimDevice> = if ctx.runner.which("xcrun").is_some() {
+        ctx.note("xcrun simctl list devices");
         let listed = ctx
             .runner
             .run("xcrun", &["simctl", "list", "devices", "-j"], None);

@@ -1,8 +1,7 @@
 //! `mdev purge` — scan everything purgeable, pick in a tree, delete in parallel.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use clap::Args;
@@ -10,7 +9,7 @@ use colored::Colorize;
 
 use crate::app_detector::AppDetector;
 use crate::fs_size::{human_size, SizeMode};
-use crate::logger::Logger;
+use crate::logger::{Logger, Progress};
 use crate::models::AppInfo;
 use crate::runner::Runner;
 use crate::tui;
@@ -23,9 +22,10 @@ pub mod scan;
 pub mod text_ui;
 pub mod tree;
 
-use candidate::{Category, Tier};
+use candidate::{display_path, Category, Tier};
 use executor::ExecOptions;
 use safety::SafetyCtx;
+use scan::ScanEvent;
 use tree::SelectionTree;
 
 #[derive(Args, Debug, Default)]
@@ -69,21 +69,48 @@ pub fn run(args: &PurgeArgs, runner: &(dyn Runner + Sync)) -> i32 {
     let started = Instant::now();
     let home = dirs::home_dir().unwrap_or_default();
     let roots = scan_roots(&args.paths);
-    let projects: Vec<(AppInfo, PathBuf)> =
-        roots.iter().flat_map(|r| collect_projects(r)).collect();
     let tmp_roots = scan::tmp_roots();
 
     let scanners: Vec<Box<dyn scan::Scanner>> = scan::all_scanners()
         .into_iter()
         .filter(|s| enabled(s.category(), &args.only, &args.skip))
         .collect();
+    let needs_projects = scanners.iter().any(|s| {
+        matches!(
+            s.category(),
+            Category::Projects | Category::Extras | Category::Worktrees
+        )
+    });
 
-    logger.info(&format!(
-        "{} scanning {} root(s), {} project(s)…",
-        "mdev purge".cyan(),
-        roots.len(),
-        projects.len()
-    ));
+    // Phase 1: project discovery (sequential walk; slow on big trees).
+    let projects: Vec<(AppInfo, PathBuf)> = if needs_projects {
+        let spinner = logger.progress("Discovering projects…");
+        let mut visited: usize = 0;
+        let found: Vec<(AppInfo, PathBuf)> = roots
+            .iter()
+            .flat_map(|r| {
+                collect_projects(r, &mut |dir| {
+                    visited += 1;
+                    spinner.set_message(format!(
+                        "Discovering projects… {visited} dirs · {}",
+                        display_path(dir, &home)
+                    ));
+                })
+            })
+            .collect();
+        spinner.finish_and_clear();
+        logger.detail(&format!(
+            "{} {} project(s) under {} root(s), {} dirs walked ({})",
+            "✓".green(),
+            found.len(),
+            roots.len(),
+            visited,
+            elapsed_text(started.elapsed())
+        ));
+        found
+    } else {
+        Vec::new()
+    };
 
     let ctx = scan::ScanContext {
         roots: &roots,
@@ -94,20 +121,51 @@ pub fn run(args: &PurgeArgs, runner: &(dyn Runner + Sync)) -> i32 {
         now: SystemTime::now(),
         runner,
         size_mode: SizeMode::Disk,
+        progress: scan::silent(),
     };
 
-    let spinner = logger.progress("Scanning…");
-    let pending: Mutex<BTreeSet<Category>> =
-        Mutex::new(scanners.iter().map(|s| s.category()).collect());
-    spinner.set_message(scanning_msg(&pending.lock().unwrap()));
-    let candidates = scan::run_all(&scanners, &ctx, &|cat| {
-        let mut p = pending.lock().unwrap();
-        p.remove(&cat);
-        spinner.set_message(scanning_msg(&p));
+    // Phase 2: one live line per category, then a sizing bar.
+    let scan_started = Instant::now();
+    let group = logger.progress_group();
+    let lines: BTreeMap<Category, Progress> = scanners
+        .iter()
+        .map(|s| {
+            (
+                s.category(),
+                group.spinner(s.category().label(), "waiting…"),
+            )
+        })
+        .collect();
+    let sizing = group.bar(0, "");
+    let candidates = scan::run_all(&scanners, &ctx, &|ev| match ev {
+        ScanEvent::Note(cat, msg) => {
+            if let Some(p) = lines.get(&cat) {
+                p.set_message(msg);
+            }
+        }
+        ScanEvent::Done(cat, found) => {
+            if let Some(p) = lines.get(&cat) {
+                p.finish_with_message(format!("{found} found"));
+            }
+        }
+        ScanEvent::Sized { done, total } => {
+            sizing.set_length(total as u64);
+            sizing.set_position(done as u64);
+            sizing.set_message(format!("sizing {total} items in parallel…"));
+        }
     });
-    spinner.finish_and_clear();
+    sizing.finish_and_clear();
+    group.clear();
 
     let mut tree = SelectionTree::build(candidates);
+    let t = tree.totals();
+    logger.detail(&format!(
+        "{} {} item(s), {} scanned in {}",
+        "✓".green(),
+        t.total,
+        human_size(t.total_bytes),
+        elapsed_text(scan_started.elapsed())
+    ));
     if args.all {
         tree.select_tier(Tier::Global, true);
     }
@@ -170,8 +228,9 @@ pub fn run(args: &PurgeArgs, runner: &(dyn Runner + Sync)) -> i32 {
     let verbose = args.verbose;
     let outcomes = executor::execute(&tree, &items, runner, &opts, &|o| {
         bar.inc(1);
+        let cand = tree.candidate(o.item);
+        bar.set_message(format!("deleted {}", cand.label));
         if verbose {
-            let cand = tree.candidate(o.item);
             let line = match &o.error {
                 None => format!("  {} {}", "✓".green(), cand.label),
                 Some(e) => format!("  {} {}: {}", "✗".red(), cand.label, e),
@@ -190,12 +249,14 @@ pub fn run(args: &PurgeArgs, runner: &(dyn Runner + Sync)) -> i32 {
     }
 }
 
-fn scanning_msg(pending: &BTreeSet<Category>) -> String {
-    if pending.is_empty() {
-        "Scanning… done".to_string()
+fn elapsed_text(d: Duration) -> String {
+    let s = d.as_secs_f64();
+    if s < 1.0 {
+        format!("{:.0} ms", s * 1000.0)
+    } else if s < 60.0 {
+        format!("{s:.1} s")
     } else {
-        let names: Vec<&str> = pending.iter().map(|c| c.label()).collect();
-        format!("Scanning… {}", names.join(", "))
+        format!("{}m {:02}s", (s / 60.0) as u64, (s % 60.0) as u64)
     }
 }
 
@@ -226,9 +287,12 @@ fn scan_roots(paths: &[PathBuf]) -> Vec<PathBuf> {
 /// Discover every project under `start_dir` — downward only, with
 /// nested-path deduplication (a child repo is not listed separately when its
 /// parent path is already a detected project root).
-pub(crate) fn collect_projects(start_dir: &Path) -> Vec<(AppInfo, PathBuf)> {
+pub(crate) fn collect_projects(
+    start_dir: &Path,
+    on_visit: &mut dyn FnMut(&Path),
+) -> Vec<(AppInfo, PathBuf)> {
     let mut projects: HashMap<String, (AppInfo, PathBuf)> = HashMap::new();
-    for (info, root) in AppDetector::new().discover_projects(start_dir) {
+    for (info, root) in AppDetector::new().discover_projects_with(start_dir, on_visit) {
         let key = root.to_string_lossy().to_string();
         projects.insert(key, (info, root));
     }
@@ -270,6 +334,28 @@ mod tests {
     }
 
     #[test]
+    fn elapsed_text_picks_unit() {
+        assert_eq!(elapsed_text(Duration::from_millis(250)), "250 ms");
+        assert_eq!(elapsed_text(Duration::from_millis(13_600)), "13.6 s");
+        assert_eq!(elapsed_text(Duration::from_secs(125)), "2m 05s");
+    }
+
+    #[test]
+    fn collect_projects_reports_visited_dirs() {
+        let tmp = TempDir::new().unwrap();
+        touch(
+            &tmp.path().join("a/Cargo.toml"),
+            "[package]\nname = \"a\"\n",
+        );
+        touch(&tmp.path().join("b/c/go.mod"), "module x\n");
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let got = collect_projects(tmp.path(), &mut |d| seen.push(d.to_path_buf()));
+        assert_eq!(got.len(), 2);
+        assert!(seen.contains(&tmp.path().to_path_buf()));
+        assert!(seen.contains(&tmp.path().join("b/c")));
+    }
+
+    #[test]
     fn scan_roots_dedupes_and_defaults_to_cwd() {
         let tmp = TempDir::new().unwrap();
         let p = tmp.path().to_path_buf();
@@ -306,7 +392,7 @@ mod tests {
             "[package]\nname = \"x\"\n",
         );
         let repo = tmp.path().join("repo");
-        let got = collect_projects(&repo);
+        let got = collect_projects(&repo, &mut |_| {});
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].1, repo);
         assert_eq!(got[0].0.project_type, ProjectType::Rust);
@@ -330,7 +416,7 @@ mod tests {
                 .join("Library/Zed/languages/bash-language-server/package.json"),
             "{}",
         );
-        let got = collect_projects(tmp.path());
+        let got = collect_projects(tmp.path(), &mut |_| {});
         assert_eq!(
             rel_paths(&got, tmp.path()),
             vec![
@@ -348,7 +434,7 @@ mod tests {
             &tmp.path().join("Cargo.toml"),
             "[package]\nname = \"solo\"\n",
         );
-        let got = collect_projects(tmp.path());
+        let got = collect_projects(tmp.path(), &mut |_| {});
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].1, tmp.path().to_path_buf());
     }
