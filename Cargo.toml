@@ -20,6 +20,9 @@ dialoguer = "0.11"
 regex = "1"
 dirs = "5"
 anyhow = "1"
+ratatui = "0.30"
+tui-tree-widget = "0.24"
+rayon = "1.12"
 
 [dev-dependencies]
 tempfile = "3"

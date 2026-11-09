@@ -1,9 +1,12 @@
 mod app_detector;
 mod commands;
 mod device_manager;
+mod fs_size;
 mod logger;
 mod models;
+mod parallel;
 mod runner;
+mod tui;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use commands::{
@@ -47,7 +50,7 @@ enum Commands {
     /// Restart the running process for the current project (relaunch the app, or restart the dev server)
     #[command(visible_alias = "r")]
     Reboot(RebootArgs),
-    /// Purge build artifacts and caches
+    /// Find and delete build artifacts, caches, temp files, logs and stale worktrees
     #[command(visible_alias = "p")]
     Purge(PurgeArgs),
     /// Generate an Android signing keystore

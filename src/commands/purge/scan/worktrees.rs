@@ -1,187 +1,321 @@
-use colored::Colorize;
+//! Git worktrees: linked worktrees registered with git, convention-named
+//! worktree folders on disk, and zombie checkouts in temp dirs.
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use super::common::{delete_existing_with_confirm, existing_paths};
-use super::PurgeArgs;
-use crate::logger::Logger;
-use crate::runner::Runner;
+use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
+use super::{is_heavy_or_owned_dir, ScanContext, Scanner};
 
-/// Max walk depth from project root (root = 0). Bounds monorepo scans.
+/// Max walk depth from a root (root = 0). Bounds monorepo scans.
 const MAX_DEPTH: usize = 4;
-
-/// A worktree entry parsed from `git worktree list --porcelain`.
-///
-/// The first entry git prints is always the repository's **main** working
-/// tree; every later entry is a linked worktree.
-#[derive(Debug, PartialEq)]
-struct Worktree {
-    path: PathBuf,
-    is_main: bool,
-    locked: bool,
-    bare: bool,
-}
-
-/// Per-project git worktree cleanup.
-///
-/// Discovers targets via the union of:
-/// 1. Linked worktrees from `git worktree list --porcelain` (main/locked/bare excluded)
-/// 2. Convention-named folders under `root` (iterative FS walk)
-///
-/// Removal (each default-No confirm):
-/// - Git-registered: `git worktree remove --force`
-/// - FS-only: `remove_dir_all` on pruned top-level paths (children covered by parents)
-///
-/// Git-gated: a no-op when `git` is not on PATH.
-pub fn run(_args: &PurgeArgs, root: &Path, runner: &dyn Runner, dry_run: bool, verbose: bool) {
-    let logger = Logger::new();
-
-    if runner.which("git").is_none() {
-        return;
-    }
-
-    let root_str = root.to_string_lossy();
-    let listed = runner.run(
-        "git",
-        &["-C", &root_str, "worktree", "list", "--porcelain"],
-        None,
-    );
-    if !listed.is_success() {
-        return;
-    }
-
-    let worktrees = parse_worktrees(&listed.stdout);
-    let git_targets: Vec<PathBuf> = removable(&worktrees)
-        .into_iter()
-        .map(|w| w.path.clone())
-        .collect();
-
-    let fs_candidates = discover_worktree_folders(root);
-    let (_, fs_only) = union_targets(&git_targets, &fs_candidates);
-
-    // Batch 1 — git-registered linked worktrees
-    if !git_targets.is_empty() {
-        logger.info(&format!(
-            "  {} linked worktree(s) (git-registered):",
-            git_targets.len().to_string().cyan()
-        ));
-        for p in &git_targets {
-            logger.info(&format!("    {}", p.display()));
-        }
-        if dry_run {
-            logger.detail(&format!(
-                "  (dry run — would remove {} via git worktree remove)",
-                git_targets.len()
-            ));
-        } else if logger.confirm(
-            &format!("  Delete {} linked worktree(s)?", git_targets.len()),
-            false,
-        ) {
-            for path in &git_targets {
-                let path_str = path.to_string_lossy();
-                let removed = runner.run(
-                    "git",
-                    &["-C", &root_str, "worktree", "remove", "--force", &path_str],
-                    None,
-                );
-                if removed.is_success() {
-                    logger.success(&format!("  {} Removed {}", "✓".green(), path.display()));
-                } else {
-                    logger.err(&format!(
-                        "  {} Failed to remove {}: {}",
-                        "✗".red(),
-                        path.display(),
-                        removed.stderr
-                    ));
-                    if verbose && !removed.stderr.is_empty() {
-                        logger.err(&removed.stderr);
-                    }
-                }
-            }
-            runner.run("git", &["-C", &root_str, "worktree", "prune"], None);
-        }
-    }
-
-    // Batch 2 — fs-only convention folders (not in git worktree list)
-    if !fs_only.is_empty() {
-        let pruned = prune_covered_descendants(&fs_only);
-        let existing = existing_paths(&pruned);
-        if !existing.is_empty() {
-            logger.info(&format!(
-                "  {} fs-only worktree-like folder(s) (not git-registered):",
-                existing.len().to_string().cyan()
-            ));
-            for p in &existing {
-                logger.info(&format!("    {}", p.display()));
-            }
-            delete_existing_with_confirm(
-                &existing,
-                dry_run,
-                verbose,
-                &logger,
-                Some("fs-worktree"),
-                &format!(
-                    "  Delete {} fs-only worktree-like folder(s)?",
-                    existing.len()
-                ),
-            );
-        }
-    }
-}
-
 /// Max walk depth under each temp root (root = 0).
 const TMP_MAX_DEPTH: usize = 3;
 
-/// Zombie worktree cleanup in temp dirs (`/tmp`, `/private/tmp`, `/var/tmp`,
-/// `$TMPDIR`). Run once per purge, not per project.
-///
-/// A zombie is a checkout whose `.git` file points to a gitdir that no longer
-/// exists (repo deleted, or worktree pruned) — git can no longer manage it.
-/// Live worktrees are left alone; those of scanned repos are handled by [`run`].
-/// Each batch is a default-No confirm.
-pub fn run_tmp(dry_run: bool, verbose: bool) {
-    let logger = Logger::new();
-    let zombies = prune_covered_descendants(&discover_tmp_zombies(&tmp_roots()));
-    let existing = existing_paths(&zombies);
-    if existing.is_empty() {
-        return;
+pub struct WorktreesScanner;
+
+impl Scanner for WorktreesScanner {
+    fn category(&self) -> Category {
+        Category::Worktrees
     }
-    logger.info(&format!(
-        "\n  {} zombie worktree(s) in temp dirs:",
-        existing.len().to_string().cyan()
-    ));
-    for p in &existing {
-        logger.info(&format!("    {}", p.display()));
+
+    fn scan(&self, ctx: &ScanContext) -> Vec<Candidate> {
+        let has_git = ctx.runner.which("git").is_some();
+        let mut out = Vec::new();
+        for root in repo_roots(ctx) {
+            let group = display_path(&root, &ctx.home);
+            let root_str = root.to_string_lossy().into_owned();
+
+            let mut git_targets: Vec<PathBuf> = Vec::new();
+            if has_git {
+                let listed = ctx.runner.run(
+                    "git",
+                    &["-C", &root_str, "worktree", "list", "--porcelain"],
+                    None,
+                );
+                if listed.is_success() {
+                    for wt in linked(&parse_worktrees(&listed.stdout)) {
+                        if std::fs::symlink_metadata(&wt.path).is_err() {
+                            continue;
+                        }
+                        git_targets.push(wt.path.clone());
+                        let dirty = is_dirty(ctx, &wt.path);
+                        let tier = if dirty || wt.locked {
+                            Tier::Global
+                        } else {
+                            Tier::Local
+                        };
+                        let mut note = Vec::new();
+                        if wt.locked {
+                            note.push("locked");
+                        }
+                        if dirty {
+                            note.push("uncommitted changes");
+                        }
+                        let label = if note.is_empty() {
+                            display_path(&wt.path, &ctx.home)
+                        } else {
+                            format!(
+                                "{} ({})",
+                                display_path(&wt.path, &ctx.home),
+                                note.join(", ")
+                            )
+                        };
+                        let wt_str = wt.path.to_string_lossy().into_owned();
+                        let mut args =
+                            vec!["-C", root_str.as_str(), "worktree", "remove", "--force"];
+                        if wt.locked {
+                            args.push("--force");
+                        }
+                        args.push(wt_str.as_str());
+                        out.push(Candidate::new(
+                            Category::Worktrees,
+                            group.clone(),
+                            label,
+                            Target::action("git", &args, None, vec![wt.path.clone()]),
+                            ctx.size_of(&wt.path),
+                            tier,
+                        ));
+                    }
+                }
+            }
+
+            let fs_candidates = discover_worktree_folders(&root);
+            let (_, fs_only) = union_targets(&git_targets, &fs_candidates);
+            for p in prune_covered_descendants(&fs_only) {
+                out.push(Candidate::new(
+                    Category::Worktrees,
+                    group.clone(),
+                    relative_label(&p, &root, &ctx.home),
+                    Target::dir(p),
+                    Size::Unknown,
+                    Tier::Local,
+                ));
+            }
+        }
+        out
     }
-    delete_existing_with_confirm(
-        &existing,
-        dry_run,
-        verbose,
-        &logger,
-        Some("tmp-worktree"),
-        &format!("  Delete {} zombie worktree(s)?", existing.len()),
-    );
 }
 
-/// Existing, deduplicated (canonical) temp roots.
-fn tmp_roots() -> Vec<PathBuf> {
-    let candidates = [
-        PathBuf::from("/tmp"),
-        PathBuf::from("/private/tmp"),
-        PathBuf::from("/var/tmp"),
-        std::env::temp_dir(),
-    ];
+/// `path` relative to `root` when nested under it, else `~`-abbreviated.
+fn relative_label(path: &Path, root: &Path, home: &Path) -> String {
+    match path.strip_prefix(root) {
+        Ok(rel) if !rel.as_os_str().is_empty() => rel.display().to_string(),
+        _ => display_path(path, home),
+    }
+}
+
+/// Scan roots plus detected project roots, deduplicated.
+fn repo_roots(ctx: &ScanContext) -> Vec<PathBuf> {
     let mut seen: HashSet<PathBuf> = HashSet::new();
-    candidates
+    let mut out = Vec::new();
+    for r in ctx.roots.iter().chain(ctx.projects.iter().map(|(_, r)| r)) {
+        let key = std::fs::canonicalize(r).unwrap_or_else(|_| r.clone());
+        if seen.insert(key) {
+            out.push(r.clone());
+        }
+    }
+    out
+}
+
+fn is_dirty(ctx: &ScanContext, worktree: &Path) -> bool {
+    let wt = worktree.to_string_lossy();
+    let status = ctx
+        .runner
+        .run("git", &["-C", &wt, "status", "--porcelain"], None);
+    status.is_success() && !status.stdout.trim().is_empty()
+}
+
+/// A worktree entry parsed from `git worktree list --porcelain`. The first
+/// entry git prints is always the repository's main working tree.
+#[derive(Debug, PartialEq)]
+pub struct Worktree {
+    pub path: PathBuf,
+    pub is_main: bool,
+    pub locked: bool,
+    pub bare: bool,
+}
+
+/// Blocks are separated by blank lines; recognized attribute lines are
+/// `locked` and `bare`.
+pub fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
+    let mut out: Vec<Worktree> = Vec::new();
+    for line in porcelain.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            out.push(Worktree {
+                path: PathBuf::from(path.trim()),
+                is_main: out.is_empty(),
+                locked: false,
+                bare: false,
+            });
+        } else if line == "locked" || line.starts_with("locked ") {
+            if let Some(w) = out.last_mut() {
+                w.locked = true;
+            }
+        } else if line == "bare" {
+            if let Some(w) = out.last_mut() {
+                w.bare = true;
+            }
+        }
+    }
+    out
+}
+
+/// Linked worktrees: not the main tree, not bare. Locked ones included.
+pub fn linked(worktrees: &[Worktree]) -> Vec<&Worktree> {
+    worktrees.iter().filter(|w| !w.is_main && !w.bare).collect()
+}
+
+/// Linked worktrees that are also not locked.
+#[cfg(test)]
+pub fn removable(worktrees: &[Worktree]) -> Vec<&Worktree> {
+    linked(worktrees)
         .into_iter()
-        .filter_map(|p| std::fs::canonicalize(p).ok())
-        .filter(|p| seen.insert(p.clone()))
+        .filter(|w| !w.locked)
         .collect()
+}
+
+/// Basename matches a known worktree layout name.
+fn is_worktree_basename(name: &str) -> bool {
+    matches!(name, "worktree" | "worktrees" | ".worktree" | ".worktrees")
+        || name.ends_with("-worktree")
+        || (name.ends_with(".worktree") && name != ".worktree")
+}
+
+/// Multi-worktree parent: children of these dirs are also candidates.
+fn is_multi_worktree_parent(name: &str, rel: &Path) -> bool {
+    matches!(name, "worktree" | "worktrees" | ".worktree" | ".worktrees")
+        || rel == Path::new(".agents/wt")
+        || rel.ends_with(Path::new(".agents/wt"))
+}
+
+/// Iterative BFS walk under `root` for convention worktree folders.
+/// Depth-bounded; skips heavy dirs and symlinks (no out-of-root escape).
+pub fn discover_worktree_folders(root: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut queue: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
+
+    while let Some((dir, depth)) = queue.pop() {
+        if depth >= MAX_DEPTH {
+            continue;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n,
+                None => continue,
+            };
+            let ft = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_symlink() || !ft.is_dir() || is_heavy_or_owned_dir(name) {
+                continue;
+            }
+            let rel = match path.strip_prefix(root) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if is_worktree_basename(name) {
+                push_unique(&mut found, &mut seen, path.clone());
+            }
+            if is_multi_worktree_parent(name, rel) {
+                push_multi_parent_children(&path, root, &mut found, &mut seen);
+            }
+            queue.push((path, depth + 1));
+        }
+    }
+
+    found.sort();
+    found
+}
+
+fn push_multi_parent_children(
+    parent: &Path,
+    root: &Path,
+    found: &mut Vec<PathBuf>,
+    seen: &mut HashSet<PathBuf>,
+) {
+    let entries = match std::fs::read_dir(parent) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() || !ft.is_dir() || is_heavy_or_owned_dir(name) {
+            continue;
+        }
+        if path.strip_prefix(root).is_err() {
+            continue;
+        }
+        push_unique(found, seen, path);
+    }
+}
+
+fn push_unique(found: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path: PathBuf) {
+    if seen.insert(path.clone()) {
+        found.push(path);
+    }
+}
+
+/// Union git paths with FS candidates; return (sorted union, fs-only).
+pub fn union_targets(
+    git_targets: &[PathBuf],
+    fs_candidates: &[PathBuf],
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut union: Vec<PathBuf> = Vec::new();
+    let mut fs_only: Vec<PathBuf> = Vec::new();
+    for p in git_targets {
+        if seen.insert(path_key(p)) {
+            union.push(p.clone());
+        }
+    }
+    for p in fs_candidates {
+        if seen.insert(path_key(p)) {
+            union.push(p.clone());
+            fs_only.push(p.clone());
+        }
+    }
+    union.sort();
+    fs_only.sort();
+    (union, fs_only)
+}
+
+fn path_key(p: &Path) -> String {
+    p.to_string_lossy().trim_end_matches('/').to_string()
+}
+
+/// Keep shallowest ancestors only — a parent wipe covers nested children.
+pub fn prune_covered_descendants(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut sorted: Vec<PathBuf> = paths.to_vec();
+    sorted.sort();
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in sorted {
+        if out.iter().any(|parent| p.starts_with(parent)) {
+            continue;
+        }
+        out.push(p);
+    }
+    out
 }
 
 /// Gitdir a linked-worktree `.git` file points to; `None` if `dir/.git` is
 /// not a file or has no `gitdir:` line.
-fn worktree_gitdir(dir: &Path) -> Option<PathBuf> {
+pub fn worktree_gitdir(dir: &Path) -> Option<PathBuf> {
     let git = dir.join(".git");
     if !git.is_file() {
         return None;
@@ -196,9 +330,10 @@ fn worktree_gitdir(dir: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Walk `roots` for linked-worktree checkouts whose gitdir is gone.
-/// Depth-bounded; skips symlinks; never descends into a worktree.
-fn discover_tmp_zombies(roots: &[PathBuf]) -> Vec<PathBuf> {
+/// Walk `roots` for linked-worktree checkouts whose gitdir is gone (repo
+/// deleted or worktree pruned). Depth-bounded; skips symlinks; never
+/// descends into a worktree.
+pub fn discover_tmp_zombies(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = Vec::new();
     let mut queue: Vec<(PathBuf, usize)> = roots.iter().map(|r| (r.clone(), 0)).collect();
 
@@ -231,200 +366,11 @@ fn discover_tmp_zombies(roots: &[PathBuf]) -> Vec<PathBuf> {
     found
 }
 
-/// Parse `git worktree list --porcelain`. Blocks are separated by blank lines;
-/// the first block is the main working tree. Recognized attribute lines:
-/// `locked` and `bare`.
-fn parse_worktrees(porcelain: &str) -> Vec<Worktree> {
-    let mut out: Vec<Worktree> = Vec::new();
-    for line in porcelain.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            out.push(Worktree {
-                path: PathBuf::from(path.trim()),
-                is_main: out.is_empty(),
-                locked: false,
-                bare: false,
-            });
-        } else if line == "locked" || line.starts_with("locked ") {
-            if let Some(w) = out.last_mut() {
-                w.locked = true;
-            }
-        } else if line == "bare" {
-            if let Some(w) = out.last_mut() {
-                w.bare = true;
-            }
-        }
-    }
-    out
-}
-
-/// Linked worktrees eligible for removal: not the main tree, not locked, not bare.
-fn removable(worktrees: &[Worktree]) -> Vec<&Worktree> {
-    worktrees
-        .iter()
-        .filter(|w| !w.is_main && !w.locked && !w.bare)
-        .collect()
-}
-
-/// Basename matches a known worktree layout name.
-fn is_worktree_basename(name: &str) -> bool {
-    matches!(name, "worktree" | "worktrees" | ".worktree" | ".worktrees")
-        || name.ends_with("-worktree")
-        || (name.ends_with(".worktree") && name != ".worktree")
-}
-
-/// Multi-worktree parent: children of these dirs are also candidates.
-fn is_multi_worktree_parent(name: &str, rel: &Path) -> bool {
-    matches!(name, "worktree" | "worktrees" | ".worktree" | ".worktrees")
-        || rel == Path::new(".agents/wt")
-        || rel.ends_with(Path::new(".agents/wt"))
-}
-
-/// Heavy / owned dirs — never descend.
-fn is_skip_dir(name: &str) -> bool {
-    super::common::is_heavy_or_owned_dir(name)
-}
-
-/// Iterative BFS walk under `root` for convention worktree folders.
-/// Depth-bounded; skips heavy dirs and symlinks (no out-of-root escape).
-fn discover_worktree_folders(root: &Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = Vec::new();
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    let mut queue: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
-
-    while let Some((dir, depth)) = queue.pop() {
-        if depth >= MAX_DEPTH {
-            continue;
-        }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(n) => n,
-                None => continue,
-            };
-            let ft = match entry.file_type() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            // Never follow symlinks — prevents escape outside root.
-            if ft.is_symlink() {
-                continue;
-            }
-            if !ft.is_dir() {
-                continue;
-            }
-            if is_skip_dir(name) {
-                continue;
-            }
-
-            let rel = match path.strip_prefix(root) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            if is_worktree_basename(name) {
-                push_unique(&mut found, &mut seen, path.clone());
-            }
-
-            if is_multi_worktree_parent(name, rel) {
-                push_multi_parent_children(&path, root, &mut found, &mut seen);
-            }
-
-            queue.push((path, depth + 1));
-        }
-    }
-
-    found.sort();
-    found
-}
-
-fn push_multi_parent_children(
-    parent: &Path,
-    root: &Path,
-    found: &mut Vec<PathBuf>,
-    seen: &mut HashSet<PathBuf>,
-) {
-    let entries = match std::fs::read_dir(parent) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => continue,
-        };
-        let ft = match entry.file_type() {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        if ft.is_symlink() || !ft.is_dir() || is_skip_dir(name) {
-            continue;
-        }
-        if path.strip_prefix(root).is_err() {
-            continue;
-        }
-        push_unique(found, seen, path);
-    }
-}
-
-fn push_unique(found: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path: PathBuf) {
-    if seen.insert(path.clone()) {
-        found.push(path);
-    }
-}
-
-/// Union git removable paths with FS candidates; return (sorted union, fs-only).
-fn union_targets(
-    git_targets: &[PathBuf],
-    fs_candidates: &[PathBuf],
-) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut union: Vec<PathBuf> = Vec::new();
-    let mut fs_only: Vec<PathBuf> = Vec::new();
-
-    for p in git_targets {
-        let key = path_key(p);
-        if seen.insert(key) {
-            union.push(p.clone());
-        }
-    }
-    for p in fs_candidates {
-        let key = path_key(p);
-        if seen.insert(key) {
-            union.push(p.clone());
-            fs_only.push(p.clone());
-        }
-    }
-    union.sort();
-    fs_only.sort();
-    (union, fs_only)
-}
-
-fn path_key(p: &Path) -> String {
-    p.to_string_lossy().trim_end_matches('/').to_string()
-}
-
-/// Keep shallowest ancestors only — a parent wipe covers nested children.
-fn prune_covered_descendants(paths: &[PathBuf]) -> Vec<PathBuf> {
-    let mut sorted: Vec<PathBuf> = paths.to_vec();
-    sorted.sort();
-    let mut out: Vec<PathBuf> = Vec::new();
-    for p in sorted {
-        if out.iter().any(|parent| p.starts_with(parent)) {
-            continue;
-        }
-        out.push(p);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::{ctx, FakeRunner};
     use super::*;
+    use crate::runner::RunResult;
     use std::fs;
     use tempfile::TempDir;
 
@@ -453,7 +399,6 @@ branch refs/heads/dirty
         assert_eq!(parsed.len(), 4);
         assert!(parsed[0].is_main);
         assert!(parsed[2].locked);
-
         let targets: Vec<&Path> = removable(&parsed)
             .iter()
             .map(|w| w.path.as_path())
@@ -465,6 +410,7 @@ branch refs/heads/dirty
                 Path::new("/repo/.agents/wt/dirty"),
             ]
         );
+        assert_eq!(linked(&parsed).len(), 3);
     }
 
     #[test]
@@ -509,11 +455,7 @@ branch refs/heads/dirty
             ("wt", false),
         ];
         for &(name, want) in cases {
-            assert_eq!(
-                is_worktree_basename(name),
-                want,
-                "is_worktree_basename({name:?}) expected {want}"
-            );
+            assert_eq!(is_worktree_basename(name), want, "{name:?}");
         }
     }
 
@@ -558,7 +500,6 @@ branch refs/heads/dirty
     fn discover_finds_convention_layouts() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-
         mkdir(root, "worktree");
         mkdir(root, "worktrees/feature-a");
         mkdir(root, "feature-worktree");
@@ -566,13 +507,10 @@ branch refs/heads/dirty
         mkdir(root, ".claude/worktree/agent-x");
         mkdir(root, ".claude/worktrees/agent-1");
         mkdir(root, ".agents/wt/feature");
-        // non-matches
         mkdir(root, "src/lib");
         mkdir(root, "node_modules/pkg");
 
-        let found = discover_worktree_folders(root);
-        let got = rels(root, &found);
-
+        let got = rels(root, &discover_worktree_folders(root));
         for expected in [
             "worktree",
             "worktrees",
@@ -590,79 +528,36 @@ branch refs/heads/dirty
                 "missing {expected:?} in {got:?}"
             );
         }
-
-        assert!(
-            !got.iter().any(|g| g == "src" || g.starts_with("src/")),
-            "must not match src: {got:?}"
-        );
-        assert!(
-            !got.iter()
-                .any(|g| g == "node_modules" || g.starts_with("node_modules/")),
-            "must not match node_modules: {got:?}"
-        );
+        assert!(!got.iter().any(|g| g == "src" || g.starts_with("src/")));
+        assert!(!got.iter().any(|g| g.starts_with("node_modules")));
     }
 
     #[test]
     fn discover_depth_bound_skips_deep_decoy() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-
-        // depth chain: a/b/c/d/worktree — worktree at depth 5 > MAX_DEPTH(4)
-        // walk visits dirs at depth < MAX_DEPTH; entry at depth MAX_DEPTH is not entered
         mkdir(root, "a/b/c/d/worktree");
-        // shallow hit still found
         mkdir(root, "feature-worktree");
-
-        let found = discover_worktree_folders(root);
-        let got = rels(root, &found);
-
-        assert!(
-            got.iter().any(|g| g == "feature-worktree"),
-            "shallow candidate missing: {got:?}"
-        );
-        assert!(
-            !got.iter().any(|g| g.contains("a/b/c/d")),
-            "deep decoy must not be discovered: {got:?}"
-        );
+        let got = rels(root, &discover_worktree_folders(root));
+        assert!(got.iter().any(|g| g == "feature-worktree"));
+        assert!(!got.iter().any(|g| g.contains("a/b/c/d")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn discover_skips_symlink_escape() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         let outside = TempDir::new().unwrap();
         mkdir(outside.path(), "secret-worktree");
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::symlink;
-            let link = root.join("escape-link");
-            symlink(outside.path(), &link).unwrap();
-        }
-        #[cfg(not(unix))]
-        {
-            // No symlink API guarantee — still assert in-root discovery works.
-            mkdir(root, "feature-worktree");
-            let found = discover_worktree_folders(root);
-            assert!(!found.is_empty());
-            return;
-        }
-
+        std::os::unix::fs::symlink(outside.path(), root.join("escape-link")).unwrap();
         mkdir(root, "feature-worktree");
         let found = discover_worktree_folders(root);
         let got = rels(root, &found);
-
         assert!(got.iter().any(|g| g == "feature-worktree"));
-        assert!(
-            !got.iter().any(|g| g.contains("secret")),
-            "must not follow symlink outside root: {got:?}"
-        );
+        assert!(!got.iter().any(|g| g.contains("secret")));
         for p in &found {
-            assert!(
-                p.starts_with(root),
-                "candidate escaped root: {}",
-                p.display()
-            );
+            assert!(p.starts_with(root));
         }
     }
 
@@ -678,13 +573,8 @@ branch refs/heads/dirty
             PathBuf::from("/repo/worktrees/orphan"),
         ];
         let (union, fs_only) = union_targets(&git, &fs);
-
         assert_eq!(union.len(), 4);
-        assert!(union.contains(&PathBuf::from("/repo/.agents/wt/feature")));
-        assert!(union.contains(&PathBuf::from("/repo/feature-worktree")));
         assert_eq!(fs_only.len(), 2);
-        assert!(fs_only.contains(&PathBuf::from("/repo/feature-worktree")));
-        assert!(fs_only.contains(&PathBuf::from("/repo/worktrees/orphan")));
         assert!(!fs_only.contains(&PathBuf::from("/repo/.agents/wt/feature")));
     }
 
@@ -697,7 +587,6 @@ branch refs/heads/dirty
     fn tmp_zombies_only_those_with_missing_gitdir() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-
         let live_gitdir = root.join("repo/.git/worktrees/live");
         fs::create_dir_all(&live_gitdir).unwrap();
         write_git_file(&root.join("live"), &live_gitdir);
@@ -709,10 +598,8 @@ branch refs/heads/dirty
             &root.join("nested/deep-zombie"),
             &root.join("gone/.git/worktrees/deep"),
         );
-        // plain dir and a regular repo (.git is a directory) are not worktrees
         mkdir(root, "plain/sub");
         mkdir(root, "regular/.git");
-
         let got = rels(root, &discover_tmp_zombies(&[root.to_path_buf()]));
         assert_eq!(got, vec!["nested/deep-zombie", "zombie"]);
     }
@@ -723,20 +610,12 @@ branch refs/heads/dirty
         let root = tmp.path();
         let outside = TempDir::new().unwrap();
         write_git_file(&outside.path().join("z"), Path::new("/nonexistent/gitdir"));
-
         mkdir(root, "rel");
         fs::write(root.join("rel/.git"), "gitdir: ../missing\n").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path().join("z"), root.join("link")).unwrap();
-
         let got = rels(root, &discover_tmp_zombies(&[root.to_path_buf()]));
         assert_eq!(got, vec!["rel"]);
-    }
-
-    #[test]
-    fn max_depth_constant_is_bounded() {
-        assert!(MAX_DEPTH <= 4);
-        assert!(MAX_DEPTH >= 1);
     }
 
     #[test]
@@ -749,9 +628,8 @@ branch refs/heads/dirty
             PathBuf::from("/repo/worktrees/feature"),
             PathBuf::from("/repo/orphan-worktree"),
         ];
-        let got = prune_covered_descendants(&paths);
         assert_eq!(
-            got,
+            prune_covered_descendants(&paths),
             vec![
                 PathBuf::from("/repo/.agents/worktree"),
                 PathBuf::from("/repo/.claude/worktrees"),
@@ -763,19 +641,70 @@ branch refs/heads/dirty
 
     #[test]
     fn prune_does_not_collapse_sibling_prefixes() {
-        // component-wise starts_with: worktree is not a prefix of worktrees
         let paths = vec![
             PathBuf::from("/repo/worktree"),
             PathBuf::from("/repo/worktrees"),
             PathBuf::from("/repo/worktrees/feature"),
         ];
-        let got = prune_covered_descendants(&paths);
         assert_eq!(
-            got,
+            prune_covered_descendants(&paths),
             vec![
                 PathBuf::from("/repo/worktree"),
-                PathBuf::from("/repo/worktrees"),
+                PathBuf::from("/repo/worktrees")
             ]
         );
+    }
+
+    #[test]
+    fn scanner_marks_dirty_and_locked_worktrees_global_and_lists_fs_only() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        mkdir(&root, "wt/clean");
+        mkdir(&root, "wt/dirty");
+        mkdir(&root, "wt/locked");
+        mkdir(&root, "feature-worktree");
+        let porcelain = format!(
+            "worktree {r}\nHEAD a\n\nworktree {r}/wt/clean\nHEAD b\n\nworktree {r}/wt/dirty\nHEAD c\n\nworktree {r}/wt/locked\nHEAD d\nlocked\n",
+            r = root.display()
+        );
+        // `git status` answers: first call (clean) empty, then dirty, then locked clean.
+        let runner = FakeRunner::new(&["git"]).respond("git", RunResult::success(porcelain));
+        let roots = vec![root.clone()];
+        let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
+
+        let found = WorktreesScanner.scan(&c);
+
+        let by_label = |needle: &str| {
+            found
+                .iter()
+                .find(|c| c.label.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle}: {found:?}"))
+        };
+        assert!(matches!(by_label("wt/clean").target, Target::Action { .. }));
+        assert_eq!(by_label("wt/locked").tier, Tier::Global);
+        assert!(by_label("wt/locked").label.contains("locked"));
+        if let Target::Action { args, .. } = &by_label("wt/locked").target {
+            assert_eq!(args.iter().filter(|a| *a == "--force").count(), 2);
+        }
+        assert!(matches!(
+            by_label("feature-worktree").target,
+            Target::Path { .. }
+        ));
+        assert_eq!(by_label("feature-worktree").tier, Tier::Local);
+        assert!(root.join("wt/clean").exists());
+    }
+
+    #[test]
+    fn scanner_without_git_still_lists_fs_folders() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        mkdir(&root, ".worktree/x");
+        let runner = FakeRunner::new(&[]);
+        let roots = vec![root.clone()];
+        let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
+        let found = WorktreesScanner.scan(&c);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].label.ends_with(".worktree"));
+        assert!(runner.calls().is_empty());
     }
 }

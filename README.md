@@ -1,6 +1,6 @@
 # mdev
 
-Rust CLI toolkit for Flutter/Android/iOS developers, with a tech-agnostic `purge` that also cleans Node, Rust, Go, Ruby/Rails, and Python build caches. Auto-detects your project and runs common dev tasks from within your project directory.
+Rust CLI toolkit for Flutter/Android/iOS developers, with a tech-agnostic `purge` that finds everything eating your disk — project build artifacts (Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, Python), stale git worktrees, temp dirs, logs, Xcode and simulator leftovers, package-manager caches, Docker — shows it all in one tree, and deletes what you keep selected in parallel. Auto-detects your project and runs common dev tasks from within your project directory.
 
 ## Why this?
 
@@ -11,7 +11,7 @@ Rust CLI toolkit for Flutter/Android/iOS developers, with a tech-agnostic `purge
 - **`adb logcat` drowns you in noise from every app and system service** — the default stream is thousands of lines per second and filtering it down to just your app requires juggling `--pid`, tag filters, and `grep` ([ref](https://medium.com/@begunova/mastering-adb-logcat-options-filters-advanced-debugging-techniques-10331a73532f)).
 - **Every action needs the package name first** — `adb shell pm clear`, `adb uninstall`, `pm grant` all take a package id, so you end up running `pm list packages | grep myapp` before the real command ([ref](https://www.repeato.app/how-to-delete-an-app-using-adb-without-knowing-its-package-name/)).
 - **"unauthorized" / "offline" dance** — device drops off the bridge and you're back to `adb kill-server`, revoking USB debugging keys, replugging, and re-accepting the fingerprint prompt ([ref](https://www.repeato.app/troubleshooting-adb-device-unauthorized-issue/)).
-- **Corrupted build caches send you hunting across Stack Overflow** — a weird build failure and suddenly you need to remember the right incantation: `~/.gradle/caches`, `flutter clean && flutter pub cache repair`, `pod deintegrate`, `rm -rf ~/Library/Developer/Xcode/DerivedData`, `pod cache clean --all`, `rm -rf node_modules`, `cargo clean`, `go clean -modcache`, `find . -name __pycache__ -exec rm -rf {} +`… different path, different flag, same wasted afternoon. `mdev purge` knows all of them across Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, and Python, and supports `--dry-run` so you can see what's about to go.
+- **Corrupted build caches send you hunting across Stack Overflow** — a weird build failure and suddenly you need to remember the right incantation: `~/.gradle/caches`, `flutter clean && flutter pub cache repair`, `pod deintegrate`, `rm -rf ~/Library/Developer/Xcode/DerivedData`, `pod cache clean --all`, `rm -rf node_modules`, `cargo clean`, `go clean -modcache`, `find . -name __pycache__ -exec rm -rf {} +`… different path, different flag, same wasted afternoon. `mdev purge` knows all of them across Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, and Python, plus temp dirs, logs, Xcode/simulator leftovers and stale worktrees, shows everything with sizes in one tree, and supports `--dry-run` so you can see what's about to go.
 
 ## Commands
 
@@ -23,7 +23,7 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 | `mdev clear` | `c` | Clear app data and restart on connected devices. Android is put in airplane mode first — `pm clear` only succeeds while the cell radio is off |
 | `mdev kill` | `x` | Kill the running process for the current project — force-stops the app on devices (Flutter/Android/iOS) or kills the dev server (Node, Rust, Go, Ruby/Rails, Python) |
 | `mdev reboot` | `r` | Restart the running process — relaunches the app on devices (Flutter/Android/iOS), or kills the dev server and prints its start command (Node, Rust, Go, Ruby/Rails, Python) |
-| `mdev purge` | `p` | Purge build artifacts and caches across Flutter, Android, iOS, Node, Rust, Go, Ruby/Rails, and Python projects |
+| `mdev purge` | `p` | Interactive tree of everything purgeable — project artifacts, git worktrees, temp dirs, logs, Xcode, Android SDK, package caches, Docker — with sizes; deletes the selection in parallel and reports space freed |
 | `mdev keystore` | `k` | Interactively generate an Android signing keystore |
 | `mdev emulator config` | `e c` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
 | `mdev emulator list` | `e l` | List known AVD config.ini tweaks |
@@ -36,46 +36,57 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 | `mdev doall` | `a` | Run a command in every immediate subfolder of a parent dir, in parallel |
 | `mdev completions` | `s` | Generate shell completion script |
 
-## Supported ecosystems
+## Purge
 
-`mdev purge` auto-detects projects in the current directory (recursing into subdirectories up to 6 levels deep, so workspace layouts like `~/projects/<group>/<repo>` are all found) and applies per-ecosystem cleaners. Global caches list existing paths then prompt **None / All / Some (confirm each)** so you can wipe everything or pick individually (default **None**). Extra ecosystems (`--node-global`, `--rust-global`, …) use the same All/Some/None gate.
+`mdev purge [PATH...]` is the one command to keep a developer machine clean. It runs in four steps:
 
-| Ecosystem | Anchor file(s) | Per-project paths | Global (gated) |
-|---|---|---|---|
-| Flutter | `pubspec.yaml` | `build/`, `.dart_tool/`, `android/build`, `ios/Pods`, `ios/Podfile.lock`, `ios/.symlinks`, … | `~/.pub-cache`, `<flutter>/bin/cache` for the active SDK **and** every FVM/asdf version (`~/fvm/versions/*/bin/cache`, `$FVM_CACHE_PATH/versions/*/bin/cache`, `~/.asdf/installs/flutter/*/bin/cache`) |
-| Android | `app/build.gradle{,.kts}` | `app/build/`, `build/`, `.gradle/` | `~/.gradle/caches` |
-| iOS | `*.xcodeproj` | `Pods/`, `Podfile.lock`, `*.xcworkspace`, `DerivedData` | CocoaPods cache, `~/Library/Developer/Xcode/DerivedData` |
-| Node | `package.json` (+ lockfile) | `node_modules/`, `.next/`, `.nuxt/`, `.turbo/`, `.vite/`, `.parcel-cache/`, `dist/`, `build/`, `.svelte-kit/`, `.astro/`, `coverage/` | `~/.npm`, `~/.pnpm-store`, `~/.cache/yarn` or `~/Library/Caches/Yarn`, `~/.bun/install/cache` |
-| Rust | `Cargo.toml` | `target/` | `~/.cargo/registry/cache`, `~/.cargo/registry/src`, `~/.cargo/git/db` |
-| Go | `go.mod` | `bin/`, `pkg/` | `go clean -modcache`, `~/Library/Caches/go-build` or `~/.cache/go-build` |
-| Ruby / Rails | `Gemfile` (+ `config/application.rb`) | `vendor/bundle/`, `.bundle/`, Rails: `tmp/cache/`, `log/*.log` | `~/.bundle/cache`, `~/.gem/cache` |
-| Python (Django / FastAPI / generic) | `pyproject.toml`, `requirements.txt`, `Pipfile`, `uv.lock`, `poetry.lock`, `manage.py` | `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, `.tox/`, `.coverage`, `htmlcov/`, Django: `staticfiles/`; opt-in: `.venv/`, `venv/`, `env/` | `~/Library/Caches/pip`/`pypoetry` (macOS), `~/.cache/pip`/`pypoetry` (Linux), `~/.cache/uv`, `~/.local/share/virtualenvs` |
+1. **Scan** — nine scanners run in parallel and collect candidates with their on-disk size. Project artifacts are looked for under `PATH...` (default: the current directory, recursing up to 6 levels so `~/projects/<group>/<repo>` layouts are found). Everything else is home-wide.
+2. **Select** — a full-screen tree, Category → Group → Item, every row with its size, the header showing *selected of total*. Everything is pre-checked except the **◆ expensive-to-recreate** tier, which is listed but unchecked.
+3. **Delete** — the selection is removed in parallel (a progress bar shows progress); command-backed items (`git worktree remove`, `go clean -modcache`, `xcrun simctl delete unavailable`, `docker … prune`) run one after another.
+4. **Report** — per-category counts and bytes freed, a total, and any failures. Exit code is 1 when something failed.
 
-Per-project paths are always cleaned for any detected project. Global caches are destructive and only fire when you pass the matching `--<eco>-global` flag, with an interactive confirmation prompt before any deletion (skipped in `--dry-run`).
+### Keys
 
-### Extras (cross-platform junk)
+| Key | Action |
+|---|---|
+| `↑` `↓` (`j` `k`) | move |
+| `Space` | toggle the node **and everything below it** — toggle a whole category or group in one keystroke; parents show `[-]` when partially selected |
+| `←` `→` (`h` `l`) | collapse / expand |
+| `a` / `n` | select all / none |
+| `/` | filter by name or path (`Enter` keeps the filter, `Esc` clears it) |
+| `Enter` | delete the selection |
+| `q` / `Esc` | abort — nothing is deleted |
 
-For every detected project (and the current directory when nothing is detected), `mdev purge` also scans for size-hungry files that aren't tied to any specific ecosystem and that tend to pile up unnoticed:
+### What is scanned
 
-- JVM heap dumps: `java_pid<NNN>.hprof`
-- JVM crash logs: `hs_err_pid<NNN>.log`
-- Core dumps: `core`, `core.<pid>`, `*.dmp`
-- Package-manager debug logs: `npm-debug.log*`, `yarn-debug.log*`, `yarn-error.log*`, `lerna-debug.log*`
-- Editor backups: `*~`, `.*.swp`, `.*.swo`, `.*.swn`
-- OS metadata: `.DS_Store`, `Thumbs.db`
-- Linter caches: `.eslintcache`, `.stylelintcache`
-- Coverage / misc: `.nyc_output/`, `nohup.out`
+| Category | Items | Default |
+|---|---|---|
+| Projects | per detected project: Flutter `build/ .dart_tool/ ios/Pods android/build …`, Android `build/ app/build .gradle`, iOS `Pods/ build/`, Node `node_modules/ .next/ dist/ …`, Rust `target/`, Go `bin/ pkg/`, Ruby `vendor/bundle .bundle` (+ Rails `tmp/cache`, `log/*.log`), Python `__pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .coverage htmlcov` (+ Django `staticfiles`) | checked; `.venv/ venv/ env/` ◆ |
+| Extras | per project: JVM heap dumps / crash logs, core dumps, `npm-debug.log*`, editor backups, `.DS_Store`, `Thumbs.db`, linter caches, `.nyc_output/` | checked |
+| Git worktrees | linked worktrees from `git worktree list` (removed with `git worktree remove --force`) and convention folders (`.worktree/`, `worktrees/*`, `.claude/worktrees/*`, `.agents/wt/*`) | checked; locked or with uncommitted changes ◆ |
+| Temp dirs | entries directly under `/tmp`, `/var/tmp`, `$TMPDIR` owned by you and older than `--tmp-age` days (default 3), plus zombie worktree checkouts anywhere below them. Sockets, FIFOs, symlinks, `com.apple.*`, lock files and live worktrees are never listed | checked |
+| Logs | each folder under `~/Library/Logs`, `~/.npm/_logs` | checked |
+| Xcode (macOS) | `DerivedData/*`, `Archives/*`, `iOS/watchOS/tvOS DeviceSupport/*`, Xcode caches, `CoreSimulator/Caches`, simulator device data (named via `simctl`), unavailable simulators | checked; Archives, the 2 newest DeviceSupport versions and simulator data ◆ |
+| Android SDK | `~/.android/cache`, `~/.android/build-cache`, `~/.gradle/daemon`, stale `*.lock` files in AVDs (only when no emulator runs) | checked |
+| Package caches | `~/.npm`, `~/.pnpm-store`, Yarn, Bun, `~/.pub-cache`, Flutter SDK `bin/cache` (active, FVM and asdf versions), `~/.cargo/registry`, `~/.cargo/git/db`, `~/.gradle/caches`, `~/.gradle/wrapper/dists`, `~/.kotlin`, Go build cache + `go clean -modcache`, pip, poetry, uv, pipenv, bundler, gem, CocoaPods, Homebrew | all ◆ |
+| Docker | `docker system prune -f` (stopped containers, build cache, dangling images) and `docker image prune -af` (all unused images), sized from `docker system df`; only when the daemon answers | prune checked; images ◆ |
 
-The scanner lists each match with its size and a total, then prompts once before deleting. Subtrees owned by other cleaners (`node_modules/`, `target/`, `.venv/`, `.git/`, `build/`, …) are skipped to avoid double-walking. Pass `--no-extras` to disable this scan.
+Paths nested under another listed path are collapsed so one wipe covers the tree.
 
-### Git worktrees
+### Flags
 
-When `git` is on your `PATH`, `mdev purge` offers worktree cleanup in **two separate batches** per detected repo (each list + confirm, default **No**):
+```
+mdev purge [PATH...] [-n|--dry-run] [-y|--yes] [--all] [--only <cats>] [--skip <cats>] [--tmp-age <days>] [-v]
+```
 
-1. **Git-registered** linked worktrees (`git worktree list`) — `git worktree remove --force`. Main and **locked** worktrees are always skipped.
-2. **FS-only** convention folders (e.g. `.worktree/`, `.claude/worktrees/`, `worktrees/feature`) not in git's list — confirm-gated free-form delete. Nested children under a listed parent are collapsed so one wipe covers the tree.
+- `-n` prints the whole tree with sizes and default marks, deletes nothing.
+- `-y` skips the tree and deletes the default selection; add `--all` to include the ◆ tier.
+- `--only` / `--skip` take comma-separated categories: `projects, extras, worktrees, temp, logs, xcode, android, package-caches, docker`.
+- When stdout is not a terminal and `-y` is absent, the tree is printed and nothing is deleted (exit 2).
 
-In `--dry-run` both batches are listed only. If `git` is unavailable, this step is a no-op.
+### Safety
+
+Before any removal every path must be absolute, exist, live under your home, a scan root or a temp root, and must not be the home, a scan root, a project root, a temp root, `/`, `/Users`, `/Volumes/<disk>` or another system location. Symlinks are never followed when sizing or deleting. A temp directory's modification time only changes when entries are added or removed, so an old directory may still contain recently written files — review the Temp group before confirming.
 
 ## Installation
 
@@ -121,15 +132,13 @@ mdev kill -d <device-id>                    # force-stop on a specific device (m
 mdev reboot                                # mobile: relaunch the app; server: kill it + print the start command
 mdev reboot -d <device-id>                  # relaunch on a specific device (mobile)
 
-# Purge all build caches (dry run first)
-mdev purge --dry-run
-mdev purge
-
-# Purge only specific targets
-mdev purge --flutter --gradle
-mdev purge --rust --dry-run                # only Rust projects
-mdev purge --node --node-global            # Node projects + global stores
-mdev purge --python --python-venv          # Python + remove .venv/venv/env
+# Purge: see everything first, then pick in the tree
+mdev purge -n                              # dry run — full tree with sizes, nothing deleted
+mdev purge                                 # interactive tree for projects under . + home-wide caches
+mdev purge ~/projects                      # scan all projects under ~/projects
+mdev purge --only projects,extras -y       # non-interactive: delete default selection of two categories
+mdev purge --skip docker,xcode             # leave Docker and Xcode alone
+mdev purge --tmp-age 7 --all               # temp entries older than 7 days, globals pre-selected
 
 # Generate a release keystore
 mdev keystore
@@ -201,6 +210,7 @@ Most commands support:
 - `-a / --all` — apply to all connected devices
 - `-v / --verbose` — show detailed output
 - `-n / --dry-run` (purge only) — preview what would be deleted
+- `-y / --yes` (purge only) — skip the tree UI and delete the default selection
 
 ## Requirements
 

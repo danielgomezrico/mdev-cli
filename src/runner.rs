@@ -19,10 +19,12 @@ impl RunResult {
         }
     }
 
+    #[cfg(test)]
     pub fn success(stdout: String) -> Self {
         Self::new(0, stdout, String::new())
     }
 
+    #[cfg(test)]
     pub fn failure(exit_code: i32, stderr: String) -> Self {
         Self::new(exit_code, String::new(), stderr)
     }

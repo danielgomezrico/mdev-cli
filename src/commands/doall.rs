@@ -4,11 +4,9 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 
 use clap::Args;
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::logger::Logger;
 
@@ -82,14 +80,7 @@ pub fn run(args: &DoallArgs) -> i32 {
         logger.detail(&format!("  · {name}"));
     }
 
-    let pb = ProgressBar::new(total as u64);
-    pb.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} [{bar:24.cyan/blue}] {pos}/{len} {msg}")
-            .unwrap()
-            .progress_chars("█▓░")
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-    );
-    pb.enable_steady_tick(Duration::from_millis(80));
+    let pb = logger.progress_bar(total as u64, "");
 
     // Folders still running — shared so the bar can show live in-flight names.
     let running: Arc<Mutex<BTreeSet<String>>> =

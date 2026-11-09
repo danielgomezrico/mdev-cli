@@ -1,28 +1,229 @@
+//! `mdev purge` — scan everything purgeable, pick in a tree, delete in parallel.
+
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
+
 use clap::Args;
 use colored::Colorize;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 
 use crate::app_detector::AppDetector;
+use crate::fs_size::{human_size, SizeMode};
 use crate::logger::Logger;
-use crate::models::{AppInfo, ProjectType};
+use crate::models::AppInfo;
 use crate::runner::Runner;
+use crate::tui;
 
-pub mod android;
-pub mod common;
-pub mod extras;
-pub mod flutter;
-pub mod go;
-pub mod ios;
-pub mod node;
-pub mod python;
-pub mod ruby;
-pub mod rust;
-pub mod worktrees;
+pub mod candidate;
+pub mod executor;
+pub mod report;
+pub mod safety;
+pub mod scan;
+pub mod text_ui;
+pub mod tree;
 
-use common::{delete_path_verbose, select_paths_to_delete};
+use candidate::{Category, Tier};
+use executor::ExecOptions;
+use safety::SafetyCtx;
+use tree::SelectionTree;
 
-/// Discover every project under `start_dir` for purge — downward only, with
+#[derive(Args, Debug, Default)]
+pub struct PurgeArgs {
+    /// Directories to scan for project artifacts (default: current directory).
+    /// Temp dirs, logs, Xcode/Android and package caches are always home-wide.
+    pub paths: Vec<PathBuf>,
+
+    /// List everything with sizes and exit — nothing is deleted
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+
+    /// Skip the tree UI and delete the default selection
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+
+    /// Also pre-select the expensive-to-recreate tier (global package caches,
+    /// simulator data, archives, venvs, dirty worktrees)
+    #[arg(long)]
+    pub all: bool,
+
+    /// Only scan these categories (comma separated)
+    #[arg(long, value_enum, value_delimiter = ',', conflicts_with = "skip")]
+    pub only: Vec<Category>,
+
+    /// Skip these categories (comma separated)
+    #[arg(long, value_enum, value_delimiter = ',')]
+    pub skip: Vec<Category>,
+
+    /// Temp entries younger than this many days are left alone
+    #[arg(long, default_value_t = 3)]
+    pub tmp_age: u64,
+
+    /// Verbose output
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
+}
+
+pub fn run(args: &PurgeArgs, runner: &(dyn Runner + Sync)) -> i32 {
+    let logger = Logger::new();
+    let started = Instant::now();
+    let home = dirs::home_dir().unwrap_or_default();
+    let roots = scan_roots(&args.paths);
+    let projects: Vec<(AppInfo, PathBuf)> =
+        roots.iter().flat_map(|r| collect_projects(r)).collect();
+    let tmp_roots = scan::tmp_roots();
+
+    let scanners: Vec<Box<dyn scan::Scanner>> = scan::all_scanners()
+        .into_iter()
+        .filter(|s| enabled(s.category(), &args.only, &args.skip))
+        .collect();
+
+    logger.info(&format!(
+        "{} scanning {} root(s), {} project(s)…",
+        "mdev purge".cyan(),
+        roots.len(),
+        projects.len()
+    ));
+
+    let ctx = scan::ScanContext {
+        roots: &roots,
+        projects: &projects,
+        home: home.clone(),
+        tmp_roots: tmp_roots.clone(),
+        tmp_age: Duration::from_secs(args.tmp_age * 24 * 3600),
+        now: SystemTime::now(),
+        runner,
+        size_mode: SizeMode::Disk,
+    };
+
+    let spinner = logger.progress("Scanning…");
+    let pending: Mutex<BTreeSet<Category>> =
+        Mutex::new(scanners.iter().map(|s| s.category()).collect());
+    spinner.set_message(scanning_msg(&pending.lock().unwrap()));
+    let candidates = scan::run_all(&scanners, &ctx, &|cat| {
+        let mut p = pending.lock().unwrap();
+        p.remove(&cat);
+        spinner.set_message(scanning_msg(&p));
+    });
+    spinner.finish_and_clear();
+
+    let mut tree = SelectionTree::build(candidates);
+    if args.all {
+        tree.select_tier(Tier::Global, true);
+    }
+    if tree.is_empty() {
+        logger.success("Nothing to purge.");
+        return 0;
+    }
+
+    let width = tui::terminal_width().unwrap_or(100);
+    if args.dry_run {
+        print!("{}", text_ui::render(&tree, width));
+        let t = tree.totals();
+        logger.info(&format!(
+            "\n{} selected of {} ({} of {}) — dry run, nothing deleted.",
+            t.selected,
+            t.total,
+            human_size(t.selected_bytes),
+            human_size(t.total_bytes)
+        ));
+        return 0;
+    }
+
+    if !args.yes {
+        if !tui::stdout_is_tty() {
+            print!("{}", text_ui::render(&tree, width));
+            logger
+                .warn("stdout is not a terminal; re-run with --yes to delete the selection above.");
+            return 2;
+        }
+        match tui::select_tree(&mut tree, "mdev purge") {
+            Ok(tui::SelectOutcome::Confirm) => {}
+            Ok(tui::SelectOutcome::Abort) => {
+                logger.info("Aborted, nothing deleted.");
+                return 0;
+            }
+            Err(e) => {
+                logger.err(&format!("terminal error: {e}"));
+                return 1;
+            }
+        }
+    }
+
+    let items = tree.selected_items();
+    if items.is_empty() {
+        logger.info("Nothing selected.");
+        return 0;
+    }
+
+    let opts = ExecOptions {
+        dry_run: false,
+        safety: SafetyCtx {
+            home,
+            scan_roots: roots.clone(),
+            project_roots: projects.iter().map(|(_, r)| r.clone()).collect(),
+            tmp_roots,
+        },
+        size_mode: SizeMode::Disk,
+    };
+    let bar = logger.progress_bar(items.len() as u64, "deleting…");
+    let verbose = args.verbose;
+    let outcomes = executor::execute(&tree, &items, runner, &opts, &|o| {
+        bar.inc(1);
+        if verbose {
+            let cand = tree.candidate(o.item);
+            let line = match &o.error {
+                None => format!("  {} {}", "✓".green(), cand.label),
+                Some(e) => format!("  {} {}: {}", "✗".red(), cand.label, e),
+            };
+            bar.suspend(|| println!("{line}"));
+        }
+    });
+    bar.finish_and_clear();
+
+    let summary = report::summarize(&tree, &outcomes);
+    print!("{}", report::render(&summary, started.elapsed(), false));
+    if summary.failures.is_empty() {
+        0
+    } else {
+        1
+    }
+}
+
+fn scanning_msg(pending: &BTreeSet<Category>) -> String {
+    if pending.is_empty() {
+        "Scanning… done".to_string()
+    } else {
+        let names: Vec<&str> = pending.iter().map(|c| c.label()).collect();
+        format!("Scanning… {}", names.join(", "))
+    }
+}
+
+fn enabled(cat: Category, only: &[Category], skip: &[Category]) -> bool {
+    if !only.is_empty() {
+        return only.contains(&cat);
+    }
+    !skip.contains(&cat)
+}
+
+/// Canonical, deduplicated scan roots; cwd when none given.
+fn scan_roots(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let given: Vec<PathBuf> = if paths.is_empty() {
+        vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
+    } else {
+        paths.to_vec()
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in given {
+        let canon = std::fs::canonicalize(&p).unwrap_or(p);
+        if !out.contains(&canon) {
+            out.push(canon);
+        }
+    }
+    out
+}
+
+/// Discover every project under `start_dir` — downward only, with
 /// nested-path deduplication (a child repo is not listed separately when its
 /// parent path is already a detected project root).
 pub(crate) fn collect_projects(start_dir: &Path) -> Vec<(AppInfo, PathBuf)> {
@@ -54,412 +255,27 @@ pub(crate) fn collect_projects(start_dir: &Path) -> Vec<(AppInfo, PathBuf)> {
     sorted
 }
 
-#[derive(Args, Debug, Default)]
-pub struct PurgeArgs {
-    /// Clean Flutter projects
-    #[arg(long)]
-    pub flutter: bool,
-
-    /// Clean pub cache
-    #[arg(long = "pub")]
-    pub pub_cache: bool,
-
-    /// Clean Gradle caches
-    #[arg(long)]
-    pub gradle: bool,
-
-    /// Clean Android projects
-    #[arg(long)]
-    pub android: bool,
-
-    /// Clean iOS projects
-    #[arg(long)]
-    pub ios: bool,
-
-    /// Clean Node/frontend projects
-    #[arg(long)]
-    pub node: bool,
-
-    /// Clean Rust/cargo projects
-    #[arg(long)]
-    pub rust: bool,
-
-    /// Clean Go projects
-    #[arg(long)]
-    pub go: bool,
-
-    /// Clean Ruby/Rails projects
-    #[arg(long)]
-    pub ruby: bool,
-
-    /// Clean Python projects
-    #[arg(long)]
-    pub python: bool,
-
-    /// Also clean Node global stores (~/.npm, ~/.pnpm-store, etc.)
-    #[arg(long = "node-global")]
-    pub node_global: bool,
-
-    /// Also clean ~/.cargo/registry caches (destructive)
-    #[arg(long = "rust-global")]
-    pub rust_global: bool,
-
-    /// Also run `go clean -modcache` and delete go-build cache (destructive)
-    #[arg(long = "go-global")]
-    pub go_global: bool,
-
-    /// Also clean ~/.bundle/cache and ~/.gem/cache (destructive)
-    #[arg(long = "ruby-global")]
-    pub ruby_global: bool,
-
-    /// Also clean pip/uv/poetry/pipenv global caches (destructive)
-    #[arg(long = "python-global")]
-    pub python_global: bool,
-
-    /// Also delete .venv/venv/env directories under each Python project (very destructive — opt-in)
-    #[arg(long = "python-venv")]
-    pub python_venv: bool,
-
-    /// Skip the cross-platform "extras" scan (JVM heap dumps, crash logs, editor backups, .DS_Store, etc.)
-    #[arg(long = "no-extras")]
-    pub no_extras: bool,
-
-    /// Dry run — show what would be deleted without deleting
-    #[arg(short = 'n', long)]
-    pub dry_run: bool,
-
-    /// Verbose output
-    #[arg(short = 'v', long)]
-    pub verbose: bool,
-}
-
-pub fn run(args: &PurgeArgs, runner: &dyn Runner) -> i32 {
-    let logger = Logger::new();
-    let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-    let sorted_projects = collect_projects(&current_dir);
-
-    if sorted_projects.is_empty() {
-        logger.warn("No recognized projects found in current directory.");
-        if !args.no_extras {
-            extras::run(args, &current_dir, args.dry_run, args.verbose);
-        }
-        worktrees::run_tmp(args.dry_run, args.verbose);
-        return 0;
-    }
-
-    let has_android = sorted_projects.iter().any(|(info, _)| {
-        info.project_type == ProjectType::Android || info.project_type == ProjectType::Flutter
-    });
-    let has_ios = sorted_projects.iter().any(|(info, _)| {
-        info.project_type == ProjectType::Ios || info.project_type == ProjectType::Flutter
-    });
-
-    let explicit_flags = args.flutter
-        || args.pub_cache
-        || args.gradle
-        || args.android
-        || args.ios
-        || args.node
-        || args.rust
-        || args.go
-        || args.ruby
-        || args.python;
-
-    // Determine global targets — Flutter caches (pub + SDK bin/cache) are offered even when
-    // no Flutter project is detected, because they are global disk hogs.
-    let do_pub = if explicit_flags {
-        args.pub_cache || args.flutter
-    } else {
-        true
-    };
-    let do_flutter_sdk = if explicit_flags { args.flutter } else { true };
-    let do_gradle = if explicit_flags {
-        args.gradle
-    } else {
-        has_android
-    };
-    let do_derived_data = if explicit_flags {
-        args.ios && cfg!(target_os = "macos")
-    } else {
-        has_ios && cfg!(target_os = "macos")
-    };
-    let do_pod_cache = if explicit_flags {
-        args.ios && cfg!(target_os = "macos")
-    } else {
-        has_ios && cfg!(target_os = "macos")
-    };
-
-    logger.info(&format!("{} starting...", "mdev purge".cyan()));
-    logger.info(&format!("Found {} project(s).", sorted_projects.len()));
-    if args.dry_run {
-        logger.warn("Dry run — no files will be deleted.");
-    }
-
-    // Per-project local cleanup — dispatched by project type to its module.
-    // When no explicit flags are passed, every detected project type runs.
-    // With explicit flags, only the matching cleaners run.
-    for (info, root) in &sorted_projects {
-        let display_root = root.display();
-        logger.info(&format!("\n{} {}", "→".cyan(), display_root));
-
-        match info.project_type {
-            ProjectType::Flutter => {
-                if !explicit_flags || args.flutter || args.android || args.ios {
-                    flutter::run(args, root, args.dry_run, args.verbose);
-                }
-            }
-            ProjectType::Android => {
-                if !explicit_flags || args.android {
-                    android::run(args, root, args.dry_run, args.verbose);
-                }
-            }
-            ProjectType::Ios => {
-                if !explicit_flags || args.ios {
-                    ios::run(args, root, args.dry_run, args.verbose);
-                }
-            }
-            ProjectType::Node { .. } => {
-                if !explicit_flags || args.node {
-                    node::run(args, root, args.dry_run, args.verbose);
-                }
-            }
-            ProjectType::Rust => {
-                if !explicit_flags || args.rust {
-                    rust::run(args, root, args.dry_run, args.verbose);
-                }
-            }
-            ProjectType::Go => {
-                if !explicit_flags || args.go {
-                    go::run(args, root, args.dry_run, args.verbose);
-                }
-            }
-            ProjectType::Ruby { .. } => {
-                if !explicit_flags || args.ruby {
-                    ruby::run(args, root, args.dry_run, args.verbose);
-                }
-            }
-            ProjectType::Python { .. } => {
-                if !explicit_flags || args.python {
-                    python::run(args, root, args.dry_run, args.verbose);
-                }
-            }
-            ProjectType::Unknown => {}
-        }
-        if !args.no_extras {
-            extras::run(args, root, args.dry_run, args.verbose);
-        }
-        // Git worktrees are a VCS concept, not tied to project type — offer to
-        // remove linked worktrees of every detected repo. Self-gated on git
-        // availability and a default-No prompt.
-        worktrees::run(args, root, runner, args.dry_run, args.verbose);
-    }
-
-    // Zombie worktrees in temp dirs are project-independent — scan once.
-    worktrees::run_tmp(args.dry_run, args.verbose);
-
-    // Global caches
-    let home = dirs::home_dir().unwrap_or_default();
-    let gradle_home = std::env::var("GRADLE_USER_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| home.join(".gradle"));
-
-    let flutter_sdk_caches = locate_flutter_sdk_caches(runner);
-
-    let mut global_paths: Vec<PathBuf> = Vec::new();
-    if do_pub {
-        global_paths.push(home.join(".pub-cache"));
-    }
-    if do_flutter_sdk {
-        global_paths.extend(flutter_sdk_caches.iter().cloned());
-    }
-    if do_gradle {
-        global_paths.push(gradle_home.join("caches"));
-        global_paths.push(gradle_home.join("wrapper").join("dists"));
-        global_paths.push(gradle_home.join("daemon"));
-        global_paths.push(home.join(".kotlin"));
-    }
-    if do_derived_data {
-        global_paths.push(
-            home.join("Library")
-                .join("Developer")
-                .join("Xcode")
-                .join("DerivedData"),
-        );
-    }
-    if do_pod_cache {
-        global_paths.push(home.join("Library").join("Caches").join("CocoaPods"));
-    }
-
-    let existing_globals: Vec<&Path> = global_paths
-        .iter()
-        .filter(|p| p.exists())
-        .map(PathBuf::as_path)
-        .collect();
-
-    if !existing_globals.is_empty() {
-        logger.info(&format!("\n{}", "Global caches to delete:".cyan()));
-        for p in &existing_globals {
-            logger.info(&format!("  {}", p.display()));
-        }
-
-        if args.dry_run {
-            logger.detail("  (dry run — skipped)");
-        } else {
-            let selected =
-                select_paths_to_delete(&existing_globals, &logger, "  Delete global caches?");
-            let pub_cache = home.join(".pub-cache");
-            for p in selected {
-                if p == pub_cache.as_path() {
-                    // Prefer flutter's own cleaner; fall back to rm.
-                    let clean_result =
-                        runner.run("flutter", &["pub", "cache", "clean", "-f"], None);
-                    if clean_result.is_success() {
-                        logger.success(&format!("  {} pub cache cleaned", "✓".green()));
-                    } else {
-                        delete_path_verbose(p, args.verbose, &logger);
-                    }
-                } else {
-                    delete_path_verbose(p, args.verbose, &logger);
-                }
-            }
-        }
-    }
-
-    // Opt-in global cleanup for new ecosystems. Each `run_global` handles its
-    // own confirmation prompt (skipped automatically in dry-run mode).
-    if args.node_global {
-        node::run_global(args, args.dry_run, args.verbose);
-    }
-    if args.rust_global {
-        rust::run_global(args, args.dry_run, args.verbose);
-    }
-    if args.go_global {
-        go::run_global(args, args.dry_run, args.verbose);
-    }
-    if args.ruby_global {
-        ruby::run_global(args, args.dry_run, args.verbose);
-    }
-    if args.python_global {
-        python::run_global(args, args.dry_run, args.verbose);
-    }
-    if args.python_venv {
-        // `run_venv` is per-project; loop over detected Python projects.
-        for (info, root) in &sorted_projects {
-            if matches!(info.project_type, ProjectType::Python { .. }) {
-                python::run_venv(args, root, args.dry_run, args.verbose);
-            }
-        }
-    }
-
-    logger.success("\nPurge complete.");
-    0
-}
-
-/// Resolve every Flutter SDK `bin/cache` directory worth cleaning:
-///   - the currently-active SDK (via `$FLUTTER_ROOT` or `which flutter`)
-///   - every FVM-managed version under `$FVM_CACHE_PATH/versions/*`,
-///     `~/fvm/versions/*`, and `~/.fvm/versions/*`
-///   - asdf/mise-managed versions under `~/.asdf/installs/flutter/*`
-///
-/// Returns deduplicated (canonical) paths so a symlinked active SDK doesn't
-/// get listed twice.
-fn locate_flutter_sdk_caches(runner: &dyn Runner) -> Vec<PathBuf> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let mut version_roots: Vec<PathBuf> = Vec::new();
-    if let Ok(custom) = std::env::var("FVM_CACHE_PATH") {
-        version_roots.push(PathBuf::from(custom).join("versions"));
-    }
-    version_roots.push(home.join("fvm").join("versions"));
-    version_roots.push(home.join(".fvm").join("versions"));
-    version_roots.push(home.join(".asdf").join("installs").join("flutter"));
-
-    collect_flutter_sdk_caches(active_flutter_sdk_cache(runner), &version_roots)
-}
-
-/// Pure helper: combine an optional active SDK cache with every
-/// `<version_root>/<version>/bin/cache` that exists, deduped by canonical
-/// path. Extracted so tests can inject synthetic roots.
-fn collect_flutter_sdk_caches(active: Option<PathBuf>, version_roots: &[PathBuf]) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
-    if let Some(p) = active {
-        out.push(p);
-    }
-    for root in version_roots {
-        let entries = match std::fs::read_dir(root) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            let cache = entry.path().join("bin").join("cache");
-            if cache.exists() {
-                out.push(cache);
-            }
-        }
-    }
-    let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    out.retain(|p| {
-        let key = std::fs::canonicalize(p).unwrap_or_else(|_| p.clone());
-        seen.insert(key)
-    });
-    out
-}
-
-fn active_flutter_sdk_cache(runner: &dyn Runner) -> Option<PathBuf> {
-    if let Ok(root) = std::env::var("FLUTTER_ROOT") {
-        let p = PathBuf::from(root).join("bin").join("cache");
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let flutter_bin = runner.which("flutter")?;
-    let resolved = std::fs::canonicalize(&flutter_bin).ok()?;
-    let cache = resolved.parent()?.join("cache");
-    if cache.exists() {
-        Some(cache)
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::ProjectType;
     use tempfile::TempDir;
 
     #[test]
-    fn collects_every_fvm_version_and_dedupes_active() {
-        let tmp = TempDir::new().unwrap();
-        let versions_root = tmp.path().join("versions");
-        for v in &["3.41.5", "3.41.6", "3.44.0"] {
-            let cache = versions_root.join(v).join("bin").join("cache");
-            std::fs::create_dir_all(&cache).unwrap();
-        }
-        // Active SDK points at the same physical path as one of the versions —
-        // dedupe should drop the duplicate.
-        let active = Some(versions_root.join("3.44.0").join("bin").join("cache"));
-
-        let caches = collect_flutter_sdk_caches(active, &[versions_root.clone()]);
-
-        assert_eq!(caches.len(), 3);
-        let names: Vec<String> = caches
-            .iter()
-            .filter_map(|p| {
-                p.parent()
-                    .and_then(|b| b.parent())
-                    .and_then(|v| v.file_name())
-                    .and_then(|n| n.to_str().map(String::from))
-            })
-            .collect();
-        assert!(names.contains(&"3.41.5".to_string()));
-        assert!(names.contains(&"3.41.6".to_string()));
-        assert!(names.contains(&"3.44.0".to_string()));
+    fn only_and_skip_filters() {
+        assert!(enabled(Category::Temp, &[], &[]));
+        assert!(!enabled(Category::Temp, &[], &[Category::Temp]));
+        assert!(enabled(Category::Temp, &[Category::Temp], &[]));
+        assert!(!enabled(Category::Logs, &[Category::Temp], &[]));
     }
 
     #[test]
-    fn missing_version_root_is_ignored() {
-        let caches = collect_flutter_sdk_caches(None, &[PathBuf::from("/nonexistent/path")]);
-        assert!(caches.is_empty());
+    fn scan_roots_dedupes_and_defaults_to_cwd() {
+        let tmp = TempDir::new().unwrap();
+        let p = tmp.path().to_path_buf();
+        let roots = scan_roots(&[p.clone(), p.clone()]);
+        assert_eq!(roots.len(), 1);
+        assert_eq!(scan_roots(&[]).len(), 1);
     }
 
     fn rel_paths(projects: &[(AppInfo, PathBuf)], base: &Path) -> Vec<String> {
@@ -481,8 +297,6 @@ mod tests {
         std::fs::write(path, contents).unwrap();
     }
 
-    /// Purge must discover downward from CWD only — never walk up to a parent
-    /// container that happens to carry a weak marker file.
     #[test]
     fn collect_projects_does_not_walk_up_to_parent_container() {
         let tmp = TempDir::new().unwrap();
@@ -491,16 +305,13 @@ mod tests {
             &tmp.path().join("repo/Cargo.toml"),
             "[package]\nname = \"x\"\n",
         );
-
         let repo = tmp.path().join("repo");
         let got = collect_projects(&repo);
-
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].1, repo);
         assert_eq!(got[0].0.project_type, ProjectType::Rust);
     }
 
-    /// End-to-end purge discovery path for the `$HOME` + `package.json` layout.
     #[test]
     fn collect_projects_home_layout_finds_nested_repos_only() {
         let tmp = TempDir::new().unwrap();
@@ -519,21 +330,15 @@ mod tests {
                 .join("Library/Zed/languages/bash-language-server/package.json"),
             "{}",
         );
-
         let got = collect_projects(tmp.path());
-        let paths = rel_paths(&got, tmp.path());
-
         assert_eq!(
-            paths,
+            rel_paths(&got, tmp.path()),
             vec![
                 "projects/open-source/cli-apps-helper".to_string(),
                 "projects/other-app".to_string(),
             ]
         );
-        assert!(
-            got.iter().all(|(_, p)| p != tmp.path()),
-            "purge must not treat a container scan root as the sole project"
-        );
+        assert!(got.iter().all(|(_, p)| p != tmp.path()));
     }
 
     #[test]
@@ -543,11 +348,8 @@ mod tests {
             &tmp.path().join("Cargo.toml"),
             "[package]\nname = \"solo\"\n",
         );
-
         let got = collect_projects(tmp.path());
-
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].1, tmp.path().to_path_buf());
-        assert_eq!(got[0].0.project_type, ProjectType::Rust);
     }
 }

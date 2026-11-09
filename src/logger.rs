@@ -1,7 +1,9 @@
 use colored::Colorize;
-use dialoguer::{Confirm, Input, Password, Select};
+use dialoguer::{Confirm, Input, Password};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
+
+const TICKS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub struct Logger;
 
@@ -52,36 +54,70 @@ impl Logger {
             .unwrap_or(default_value)
     }
 
-    /// Interactive single-choice menu. Returns selected index; on failure, `default`.
-    pub fn select(&self, msg: &str, items: &[&str], default: usize) -> usize {
-        if items.is_empty() {
-            return 0;
-        }
-        let default = default.min(items.len() - 1);
-        Select::new()
-            .with_prompt(msg)
-            .items(items)
-            .default(default)
-            .interact()
-            .unwrap_or(default)
-    }
-
-    /// Returns a spinner progress bar. Caller is responsible for finishing it.
-    pub fn progress(&self, msg: &str) -> ProgressBar {
+    /// Indeterminate spinner with a message. Caller finishes it.
+    pub fn progress(&self, msg: &str) -> Progress {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
             ProgressStyle::with_template("{spinner:.cyan} {msg}")
                 .unwrap()
-                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+                .tick_strings(TICKS),
         );
         pb.set_message(msg.to_string());
         pb.enable_steady_tick(Duration::from_millis(80));
-        pb
+        Progress(pb)
+    }
+
+    /// Determinate `pos/len` bar with a message. Caller finishes it.
+    pub fn progress_bar(&self, total: u64, msg: &str) -> Progress {
+        let pb = ProgressBar::new(total);
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} [{bar:24.cyan/blue}] {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("█▓░")
+                .tick_strings(TICKS),
+        );
+        pb.set_message(msg.to_string());
+        pb.enable_steady_tick(Duration::from_millis(80));
+        Progress(pb)
     }
 }
 
 impl Default for Logger {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Live progress indicator (spinner or bar). Wraps the terminal library so
+/// callers never touch it directly. Safe to share across threads.
+#[derive(Clone)]
+pub struct Progress(ProgressBar);
+
+impl Progress {
+    pub fn set_message(&self, msg: String) {
+        self.0.set_message(msg);
+    }
+
+    #[allow(dead_code)]
+    pub fn set_position(&self, pos: u64) {
+        self.0.set_position(pos);
+    }
+
+    #[allow(dead_code)]
+    pub fn inc(&self, delta: u64) {
+        self.0.inc(delta);
+    }
+
+    /// Run `f` with the indicator hidden so printed lines are not eaten.
+    pub fn suspend<R>(&self, f: impl FnOnce() -> R) -> R {
+        self.0.suspend(f)
+    }
+
+    pub fn finish_and_clear(&self) {
+        self.0.finish_and_clear();
+    }
+
+    pub fn finish_with_message(&self, msg: String) {
+        self.0.finish_with_message(msg);
     }
 }
