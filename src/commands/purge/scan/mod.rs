@@ -12,6 +12,7 @@ use crate::parallel;
 use crate::runner::{Runner, Timed};
 
 use super::candidate::{dedupe_covered, Candidate, Category, Size, Target, Tier};
+use super::safety::{assert_deletable, SafetyCtx};
 
 pub mod android_sdk;
 pub mod docker;
@@ -68,6 +69,16 @@ impl<'a> ScanContext<'a> {
     pub fn note(&self, msg: impl AsRef<str>) {
         (self.progress)(msg.as_ref());
     }
+
+    /// Delete-time safety rules for this scan's roots.
+    pub fn safety(&self) -> SafetyCtx {
+        SafetyCtx {
+            home: self.home.clone(),
+            scan_roots: self.roots.to_vec(),
+            project_roots: self.projects.iter().map(|(_, r)| r.clone()).collect(),
+            tmp_roots: self.tmp_roots.clone(),
+        }
+    }
 }
 
 pub trait Scanner: Sync {
@@ -90,14 +101,16 @@ pub fn all_scanners() -> Vec<Box<dyn Scanner>> {
 }
 
 /// Run every scanner in parallel — their commands bounded by `SCAN_TIMEOUT` —
-/// size path candidates that came back `Unknown` (`Skipped` stay unmeasured),
-/// drop nested duplicates. `on_event` receives live progress.
+/// drop path candidates the executor would refuse and nested duplicates,
+/// size path candidates that came back `Unknown` (`Skipped` stay unmeasured).
+/// `on_event` receives live progress.
 pub fn run_all(
     scanners: &[Box<dyn Scanner>],
     ctx: &ScanContext,
     on_event: &(dyn Fn(ScanEvent) + Sync),
 ) -> Vec<Candidate> {
     let timed = Timed::new(ctx.runner, SCAN_TIMEOUT);
+    let safety = ctx.safety();
     let per_scanner: Vec<Vec<Candidate>> = parallel::map(scanners.iter().collect(), |s| {
         let cat = s.category();
         let sink = move |msg: &str| on_event(ScanEvent::Note(cat, msg.to_string()));
@@ -106,7 +119,15 @@ pub fn run_all(
             progress: &sink,
             ..ctx.clone()
         };
-        let found = s.scan(&local);
+        let found: Vec<Candidate> = s
+            .scan(&local)
+            .into_iter()
+            .filter(|c| {
+                c.target
+                    .path()
+                    .is_none_or(|p| assert_deletable(p, &safety).is_ok())
+            })
+            .collect();
         on_event(ScanEvent::Done(cat, found.len()));
         found
     });
@@ -222,6 +243,8 @@ pub(crate) mod test_support {
         pub tools: Vec<&'static str>,
         pub responses: Vec<(&'static str, RunResult)>,
         pub calls: Mutex<Vec<Vec<String>>>,
+        /// Working directory of every `run` call, in call order.
+        pub cwds: Mutex<Vec<Option<String>>>,
         /// Timeout of every `run_timeout` call, in call order.
         pub timeouts: Mutex<Vec<Duration>>,
     }
@@ -232,6 +255,7 @@ pub(crate) mod test_support {
                 tools: tools.to_vec(),
                 responses: Vec::new(),
                 calls: Mutex::new(Vec::new()),
+                cwds: Mutex::new(Vec::new()),
                 timeouts: Mutex::new(Vec::new()),
             }
         }
@@ -247,10 +271,11 @@ pub(crate) mod test_support {
     }
 
     impl Runner for FakeRunner {
-        fn run(&self, executable: &str, args: &[&str], _cwd: Option<&str>) -> RunResult {
+        fn run(&self, executable: &str, args: &[&str], cwd: Option<&str>) -> RunResult {
             let mut call = vec![executable.to_string()];
             call.extend(args.iter().map(|a| a.to_string()));
             self.calls.lock().unwrap().push(call);
+            self.cwds.lock().unwrap().push(cwd.map(str::to_string));
             self.responses
                 .iter()
                 .find(|(exe, _)| *exe == executable)
@@ -310,6 +335,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::{ctx, FakeRunner};
     use super::*;
+    use crate::commands::purge::candidate::Freed;
     use crate::fs_size::SizeMode;
     use std::sync::Mutex;
     use tempfile::TempDir;
@@ -377,5 +403,47 @@ mod tests {
         assert_eq!(ev[1], ScanEvent::Done(Category::Logs, 1));
         assert_eq!(ev[2], ScanEvent::Sized { done: 0, total: 1 });
         assert_eq!(ev[3], ScanEvent::Sized { done: 1, total: 1 });
+    }
+
+    #[test]
+    fn run_all_drops_path_candidates_that_would_be_refused() {
+        let home = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let inside = home.path().join("cache");
+        let outside = elsewhere.path().join("sdk");
+        std::fs::create_dir(&inside).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let cand = |p: &Path| {
+            Candidate::new(
+                Category::Logs,
+                "g",
+                p.display().to_string(),
+                Target::dir(p.to_path_buf()),
+                Size::Bytes(1),
+                Tier::Local,
+            )
+        };
+        let action = Candidate::new(
+            Category::Logs,
+            "g",
+            "act",
+            Target::action("x", &[], None, Freed::Reported),
+            Size::Bytes(1),
+            Tier::Local,
+        );
+        let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(Fixed(vec![
+            cand(&inside),
+            cand(&outside),
+            cand(home.path()),
+            action,
+        ]))];
+        let runner = FakeRunner::new(&[]);
+        let roots: Vec<PathBuf> = vec![];
+        let c = ctx(&roots, &[], home.path(), vec![], &runner);
+        let labels: Vec<String> = run_all(&scanners, &c, &|_| {})
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(labels, vec![inside.display().to_string(), "act".into()]);
     }
 }

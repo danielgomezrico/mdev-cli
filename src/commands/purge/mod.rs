@@ -24,7 +24,6 @@ pub mod tree;
 
 use candidate::{display_path, outermost, Category, Tier};
 use executor::ExecOptions;
-use safety::SafetyCtx;
 use scan::ScanEvent;
 use tree::SelectionTree;
 
@@ -69,7 +68,6 @@ pub fn run(args: &PurgeArgs, runner: &(dyn Runner + Sync)) -> i32 {
     let started = Instant::now();
     let home = dirs::home_dir().unwrap_or_default();
     let roots = scan_roots(&args.paths);
-    let tmp_roots = scan::tmp_roots();
 
     let scanners: Vec<Box<dyn scan::Scanner>> = scan::all_scanners()
         .into_iter()
@@ -115,8 +113,8 @@ pub fn run(args: &PurgeArgs, runner: &(dyn Runner + Sync)) -> i32 {
     let ctx = scan::ScanContext {
         roots: &roots,
         projects: &projects,
-        home: home.clone(),
-        tmp_roots: tmp_roots.clone(),
+        home,
+        tmp_roots: scan::tmp_roots(),
         tmp_age: Duration::from_secs(args.tmp_age * 24 * 3600),
         now: SystemTime::now(),
         runner,
@@ -216,12 +214,7 @@ pub fn run(args: &PurgeArgs, runner: &(dyn Runner + Sync)) -> i32 {
 
     let opts = ExecOptions {
         dry_run: false,
-        safety: SafetyCtx {
-            home,
-            scan_roots: roots.clone(),
-            project_roots: projects.iter().map(|(_, r)| r.clone()).collect(),
-            tmp_roots,
-        },
+        safety: ctx.safety(),
         size_mode: SizeMode::Disk,
     };
     let bar = logger.progress_bar(items.len() as u64, "deleting…");

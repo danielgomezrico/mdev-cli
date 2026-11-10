@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
+use super::super::candidate::{display_path, Candidate, Category, Freed, Size, Target, Tier};
 use super::{existing, ScanContext, Scanner};
 
 pub struct PackageCachesScanner;
@@ -104,7 +104,12 @@ impl Scanner for PackageCachesScanner {
         };
         push_paths("Go", vec![go_build]);
         if ctx.runner.which("go").is_some() {
-            let modcache = ctx.runner.run("go", &["env", "GOMODCACHE"], None);
+            // From home: a go.mod in the process cwd could trigger a
+            // GOTOOLCHAIN download.
+            let home_str = home.to_string_lossy();
+            let modcache = ctx
+                .runner
+                .run("go", &["env", "GOMODCACHE"], Some(home_str.as_ref()));
             if modcache.is_success() && !modcache.stdout.trim().is_empty() {
                 let p = PathBuf::from(modcache.stdout.trim());
                 if p.exists() {
@@ -112,7 +117,12 @@ impl Scanner for PackageCachesScanner {
                         Category::PackageCaches,
                         "Go",
                         format!("{} (go clean -modcache)", display_path(&p, home)),
-                        Target::action("go", &["clean", "-modcache"], None, vec![p]),
+                        Target::action(
+                            "go",
+                            &["clean", "-modcache"],
+                            Some(home.clone()),
+                            Freed::Paths(vec![p]),
+                        ),
                         Size::Skipped,
                         Tier::Global,
                     ));
@@ -229,5 +239,13 @@ mod tests {
         let go = found.iter().find(|c| c.group == "Go").unwrap();
         assert!(matches!(go.target, Target::Action { .. }));
         assert!(go.label.contains("go clean -modcache"));
+        // Run from home, never the process cwd: a go.mod there could make
+        // GOTOOLCHAIN download a toolchain.
+        let home_str = home.display().to_string();
+        assert_eq!(*runner.cwds.lock().unwrap(), vec![Some(home_str)]);
+        let Target::Action { cwd, .. } = &go.target else {
+            unreachable!()
+        };
+        assert_eq!(cwd.as_deref(), Some(home));
     }
 }

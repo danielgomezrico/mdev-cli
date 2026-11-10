@@ -55,7 +55,7 @@ fn render_node(tree: &SelectionTree, id: NodeId, depth: usize, width: usize, out
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::purge::candidate::{Candidate, Category, Size, Target, Tier};
+    use crate::commands::purge::candidate::{Candidate, Category, Freed, Size, Target, Tier};
     use std::path::PathBuf;
 
     #[test]
@@ -73,7 +73,7 @@ mod tests {
                 Category::Docker,
                 "docker",
                 "unused images",
-                Target::action("docker", &["image", "prune", "-af"], None, vec![]),
+                Target::action("docker", &["image", "prune", "-af"], None, Freed::Reported),
                 Size::Unknown,
                 Tier::Global,
             ),
@@ -104,7 +104,7 @@ mod tests {
                 Category::Xcode,
                 "g",
                 "b",
-                Target::action("x", &[], None, vec![]),
+                Target::action("x", &[], None, Freed::Paths(vec![])),
                 Size::Unknown,
                 Tier::Local,
             ),

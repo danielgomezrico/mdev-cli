@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
+use super::super::candidate::{display_path, Candidate, Category, Freed, Size, Target, Tier};
 use super::{child_dirs, existing, process_running, tier_unless_busy, ScanContext, Scanner};
 
 pub struct XcodeScanner;
@@ -248,7 +248,7 @@ fn simulators(ctx: &ScanContext, devices_dir: &Path) -> Vec<Candidate> {
                 "xcrun",
                 &["simctl", "delete", "unavailable"],
                 None,
-                unavailable,
+                Freed::Paths(unavailable),
             ),
             Size::Skipped,
             Tier::Global,
@@ -372,7 +372,11 @@ mod tests {
             .find(|c| matches!(c.target, Target::Action { .. }))
             .unwrap_or_else(|| panic!("{found:?}"));
         assert_eq!(action.tier, Tier::Global);
-        let Target::Action { affects, .. } = &action.target else {
+        let Target::Action {
+            freed: Freed::Paths(affects),
+            ..
+        } = &action.target
+        else {
             unreachable!()
         };
         assert_eq!(affects.len(), 1);

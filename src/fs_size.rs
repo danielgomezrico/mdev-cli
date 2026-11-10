@@ -1,6 +1,8 @@
-//! Parallel, symlink-safe directory sizing and human-readable formatting.
+//! Parallel, symlink-safe, hardlink-aware directory sizing and human-readable formatting.
 
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::parallel;
 
@@ -20,7 +22,8 @@ pub enum SizeMode {
 
 /// Total bytes under `path`. Symlinks are never followed (a link counts 0);
 /// unreadable entries count 0; a plain file returns its own size; a missing
-/// path returns 0.
+/// path returns 0. Hardlinked files count once; other filesystems mounted
+/// below `path` are not entered.
 pub fn dir_size(path: &Path, mode: SizeMode) -> u64 {
     let meta = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
@@ -31,38 +34,95 @@ pub fn dir_size(path: &Path, mode: SizeMode) -> u64 {
         return 0;
     }
     if ft.is_dir() {
-        return sum_dir(path, mode);
+        return Walk::new(mode, device(&meta)).dir(path);
     }
     file_size(&meta, mode)
 }
 
-fn sum_dir(dir: &Path, mode: SizeMode) -> u64 {
-    let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(dir) {
-        Ok(rd) => rd.flatten().collect(),
-        Err(_) => return 0,
-    };
-    let size_of = |entry: std::fs::DirEntry| -> u64 {
+/// One sizing walk: the root's device and the hardlinks already counted.
+struct Walk {
+    mode: SizeMode,
+    dev: Option<u64>,
+    seen: Mutex<HashSet<(u64, u64)>>,
+}
+
+impl Walk {
+    fn new(mode: SizeMode, dev: Option<u64>) -> Self {
+        Self {
+            mode,
+            dev,
+            seen: Mutex::new(HashSet::new()),
+        }
+    }
+
+    fn dir(&self, dir: &Path) -> u64 {
+        let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(dir) {
+            Ok(rd) => rd.flatten().collect(),
+            Err(_) => return 0,
+        };
+        if entries.len() < PARALLEL_THRESHOLD {
+            entries
+                .into_iter()
+                .fold(0u64, |acc, e| acc.saturating_add(self.entry(e)))
+        } else {
+            parallel::map(entries, |e| self.entry(e))
+                .into_iter()
+                .fold(0u64, |acc, s| acc.saturating_add(s))
+        }
+    }
+
+    fn entry(&self, entry: std::fs::DirEntry) -> u64 {
         let ft = match entry.file_type() {
             Ok(t) => t,
             Err(_) => return 0,
         };
         if ft.is_symlink() {
-            0
-        } else if ft.is_dir() {
-            sum_dir(&entry.path(), mode)
-        } else {
-            entry.metadata().map(|m| file_size(&m, mode)).unwrap_or(0)
+            return 0;
         }
-    };
-    if entries.len() < PARALLEL_THRESHOLD {
-        entries
-            .into_iter()
-            .fold(0u64, |acc, e| acc.saturating_add(size_of(e)))
-    } else {
-        parallel::map(entries, size_of)
-            .into_iter()
-            .fold(0u64, |acc, s| acc.saturating_add(s))
+        let Ok(meta) = entry.metadata() else {
+            return 0;
+        };
+        if ft.is_dir() {
+            if device(&meta) != self.dev {
+                return 0;
+            }
+            return self.dir(&entry.path());
+        }
+        let first_sighting = hardlink_id(&meta).is_none_or(|id| {
+            self.seen
+                .lock()
+                .map(|mut seen| seen.insert(id))
+                .unwrap_or(true)
+        });
+        if first_sighting {
+            file_size(&meta, self.mode)
+        } else {
+            0
+        }
     }
+}
+
+#[cfg(unix)]
+fn device(meta: &std::fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(meta.dev())
+}
+
+#[cfg(not(unix))]
+fn device(_meta: &std::fs::Metadata) -> Option<u64> {
+    None
+}
+
+/// `(dev, ino)` of a file with more than one link; `None` otherwise.
+#[cfg(unix)]
+fn hardlink_id(meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    (meta.nlink() > 1).then(|| (meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn hardlink_id(_meta: &std::fs::Metadata) -> Option<(u64, u64)> {
+    None
 }
 
 #[cfg(unix)]
@@ -162,6 +222,31 @@ mod tests {
             disk == 0 || disk.is_multiple_of(512),
             "disk size {disk} not block-aligned"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlinks_count_once_per_walk() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("a")).unwrap();
+        fs::write(tmp.path().join("orig"), vec![0u8; 1000]).unwrap();
+        fs::hard_link(tmp.path().join("orig"), tmp.path().join("a/link")).unwrap();
+        for i in 0..PARALLEL_THRESHOLD {
+            fs::hard_link(tmp.path().join("orig"), tmp.path().join(format!("l{i}"))).unwrap();
+        }
+        assert_eq!(dir_size(tmp.path(), SizeMode::Apparent), 1000);
+        assert_eq!(dir_size(&tmp.path().join("a"), SizeMode::Apparent), 1000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn does_not_descend_into_other_devices() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("mnt")).unwrap();
+        fs::write(tmp.path().join("mnt/f"), vec![0u8; 100]).unwrap();
+        fs::write(tmp.path().join("own"), vec![0u8; 5]).unwrap();
+        let walk = Walk::new(SizeMode::Apparent, Some(u64::MAX));
+        assert_eq!(walk.dir(tmp.path()), 5);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Docker reclaimable space, measured with `docker system df` and freed
 //! through prune commands.
 
-use super::super::candidate::{Candidate, Category, Size, Target, Tier};
+use super::super::candidate::{Candidate, Category, Freed, Size, Target, Tier};
 use super::{ScanContext, Scanner};
 
 pub struct DockerScanner;
@@ -51,7 +51,7 @@ impl Scanner for DockerScanner {
                 Category::Docker,
                 "docker",
                 label,
-                Target::action("docker", args, None, vec![]),
+                Target::action("docker", args, None, Freed::Reported),
                 Size::Bytes(bytes),
                 tier,
             )
@@ -91,23 +91,34 @@ pub fn parse_system_df(out: &str) -> DockerUsage {
     u
 }
 
-/// `"1.2GB (40%)"` → bytes. Docker prints decimal units.
+/// Bytes in the `Total reclaimed space: 1.2GB` line printed by `docker … prune`.
+pub fn reclaimed(out: &str) -> Option<u64> {
+    out.lines()
+        .find_map(|l| l.trim().strip_prefix("Total reclaimed space:"))
+        .map(parse_docker_size)
+}
+
+/// `"1.2GB (40%)"` / `"512MiB"` → bytes. Decimal (`kB`, `MB`…) and binary
+/// (`KiB`, `MiB`…) units.
 pub fn parse_docker_size(s: &str) -> u64 {
     let head = s.split_whitespace().next().unwrap_or("");
     let num_end = head
         .find(|c: char| !(c.is_ascii_digit() || c == '.'))
         .unwrap_or(head.len());
     let num: f64 = head[..num_end].parse().unwrap_or(0.0);
-    let unit = head[num_end..].trim().to_ascii_lowercase();
-    let mult: f64 = match unit.as_str() {
-        "b" | "" => 1.0,
-        "kb" => 1e3,
-        "mb" => 1e6,
-        "gb" => 1e9,
-        "tb" => 1e12,
-        _ => 1.0,
+    let unit = head[num_end..].to_ascii_lowercase();
+    let (prefix, base) = match unit.strip_suffix("ib") {
+        Some(p) => (p, 1024f64),
+        None => (unit.strip_suffix('b').unwrap_or(&unit), 1000f64),
     };
-    (num * mult) as u64
+    let exp = match prefix {
+        "k" => 1,
+        "m" => 2,
+        "g" => 3,
+        "t" => 4,
+        _ => 0,
+    };
+    (num * base.powi(exp)) as u64
 }
 
 #[cfg(test)]
@@ -129,6 +140,11 @@ mod tests {
         assert_eq!(parse_docker_size("80MB (80%)"), 80_000_000);
         assert_eq!(parse_docker_size("0B (0%)"), 0);
         assert_eq!(parse_docker_size("12kB"), 12_000);
+        assert_eq!(parse_docker_size("2KiB"), 2048);
+        assert_eq!(parse_docker_size("1.5MiB"), 1_572_864);
+        assert_eq!(parse_docker_size("2GiB"), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_docker_size("1TiB"), 1 << 40);
+        assert_eq!(parse_docker_size("17B"), 17);
         let u = parse_system_df(DF);
         assert_eq!(
             u,
@@ -138,6 +154,15 @@ mod tests {
                 build_cache: 500_000_000
             }
         );
+    }
+
+    #[test]
+    fn parses_total_reclaimed_space() {
+        let out = "ID\tRECLAIMABLE\tSIZE\nabc\ttrue\t1MB\nTotal reclaimed space: 1.5GB";
+        assert_eq!(reclaimed(out), Some(1_500_000_000));
+        assert_eq!(reclaimed("Total:\t2.1GiB"), None);
+        assert_eq!(reclaimed("Total reclaimed space: 0B"), Some(0));
+        assert_eq!(reclaimed(""), None);
     }
 
     #[test]

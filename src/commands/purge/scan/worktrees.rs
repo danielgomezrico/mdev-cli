@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
-use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
+use super::super::candidate::{display_path, Candidate, Category, Freed, Size, Target, Tier};
 use super::{is_heavy_or_owned_dir, ScanContext, Scanner};
 use crate::parallel;
 
@@ -126,7 +126,7 @@ impl Listed {
             Category::Worktrees,
             self.group,
             label,
-            Target::action("git", &args, None, vec![self.path.clone()]),
+            Target::action("git", &args, None, Freed::Paths(vec![self.path.clone()])),
             Size::Skipped,
             tier,
         )

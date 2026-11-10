@@ -8,8 +8,9 @@ use crate::fs_size::{dir_size, SizeMode};
 use crate::parallel;
 use crate::runner::Runner;
 
-use super::candidate::{outermost, EntryKind, ItemId, Size, Target};
+use super::candidate::{outermost, EntryKind, Freed, ItemId, Size, Target};
 use super::safety::{assert_deletable, SafetyCtx};
+use super::scan::docker::reclaimed;
 use super::scan::existing;
 use super::tree::SelectionTree;
 
@@ -76,7 +77,7 @@ pub fn execute(
             exe,
             args,
             cwd,
-            affects,
+            freed,
         } = &tree.candidate(id).target
         {
             let size = tree.candidate(id).size.bytes();
@@ -88,8 +89,13 @@ pub fn execute(
             let cwd_str = cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
             let result = runner.run(exe, &arg_refs, cwd_str.as_deref());
             if result.is_success() {
-                let freed = freed_by_action(affects, tree.candidate(id).size, opts.size_mode);
-                outcomes.push(done(id, freed, None, on_done));
+                let bytes = match freed {
+                    Freed::Paths(affects) => {
+                        freed_by_action(affects, tree.candidate(id).size, opts.size_mode)
+                    }
+                    Freed::Reported => reclaimed(&result.stdout).unwrap_or(size),
+                };
+                outcomes.push(done(id, bytes, None, on_done));
             } else {
                 let msg = if result.stderr.is_empty() {
                     format!("exit {}", result.exit_code)
@@ -327,7 +333,12 @@ mod tests {
             Category::PackageCaches,
             "go",
             "mod cache",
-            Target::action("go", &["clean", "-modcache"], None, vec![cache.clone()]),
+            Target::action(
+                "go",
+                &["clean", "-modcache"],
+                None,
+                Freed::Paths(vec![cache.clone()]),
+            ),
             Size::Bytes(500),
             Tier::Local,
         );
@@ -335,7 +346,7 @@ mod tests {
             Category::Docker,
             "docker",
             "prune",
-            Target::action("docker", &["system", "prune", "-f"], None, vec![]),
+            Target::action("docker", &["system", "prune", "-f"], None, Freed::Reported),
             Size::Bytes(99),
             Tier::Local,
         );
@@ -386,7 +397,7 @@ mod tests {
             Category::Docker,
             "g",
             "a",
-            Target::action("x", &[], None, affects),
+            Target::action("x", &[], None, Freed::Paths(affects)),
             Size::Bytes(size),
             Tier::Local,
         )
@@ -429,6 +440,36 @@ mod tests {
     }
 
     #[test]
+    fn reported_action_frees_what_the_command_prints() {
+        let home = TempDir::new().unwrap();
+        let prune = |size| {
+            Candidate::new(
+                Category::Docker,
+                "docker",
+                "build cache",
+                Target::action("docker", &["builder", "prune", "-f"], None, Freed::Reported),
+                Size::Bytes(size),
+                Tier::Local,
+            )
+        };
+        let tree = SelectionTree::build(vec![prune(999), prune(7)]);
+        let printed = FakeRunner::new(&[]).respond(
+            "docker",
+            RunResult::success(
+                "Deleted build cache objects:\nx\nTotal reclaimed space: 2.5kB".into(),
+            ),
+        );
+        let out = execute(&tree, &[ItemId(0)], &printed, &opts(home.path()), &|_| {});
+        assert_eq!(out[0].bytes_freed, 2_500);
+        let silent = FakeRunner::new(&[]).respond("docker", RunResult::success(String::new()));
+        let out = execute(&tree, &[ItemId(1)], &silent, &opts(home.path()), &|_| {});
+        assert_eq!(
+            out[0].bytes_freed, 7,
+            "unparseable output falls back to scan size"
+        );
+    }
+
+    #[test]
     fn covered_by_parent_is_not_quadratic() {
         let cands: Vec<Candidate> = (0..40_000)
             .map(|i| dir_cand(Path::new(&format!("/r/p{i}")), 1))
@@ -465,7 +506,12 @@ mod tests {
             Category::Worktrees,
             "repo",
             "wt",
-            Target::action("git", &["worktree", "remove"], None, vec![wt.clone()]),
+            Target::action(
+                "git",
+                &["worktree", "remove"],
+                None,
+                Freed::Paths(vec![wt.clone()]),
+            ),
             Size::Skipped,
             Tier::Local,
         );

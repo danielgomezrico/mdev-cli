@@ -43,7 +43,7 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 1. **Scan** — nine scanners run in parallel and collect candidates with their on-disk size. Project artifacts are looked for under `PATH...` (default: the current directory, recursing up to 6 levels so `~/projects/<group>/<repo>` layouts are found). Everything else is home-wide. While it runs you see what takes the time: a spinner with the directory count and current folder during project discovery, one live line per category showing the path or command it is on, then a bar while sizes are computed in parallel.
 2. **Select** — a full-screen tree, Category → Group → Item, every row with its size, the header showing *selected of total*. Everything is pre-checked except the **◆ expensive-to-recreate** tier, which is listed but unchecked and never sized (shown as `?`) to keep the scan fast.
 3. **Delete** — the selection is removed in parallel (a progress bar shows progress); command-backed items (`git worktree remove`, `go clean -modcache`, `xcrun simctl delete unavailable`, `docker … prune`) run one after another.
-4. **Report** — per-category counts and bytes freed, a total, and any failures. Exit code is 1 when something failed.
+4. **Report** — per-category counts and bytes freed (docker prunes report what docker says it reclaimed), a total, and any failures. Exit code is 1 when something failed.
 
 ### Keys
 
@@ -86,7 +86,7 @@ mdev purge [PATH...] [-n|--dry-run] [-y|--yes] [--all] [--only <cats>] [--skip <
 
 ### Safety
 
-Before any removal every path must be absolute, exist, live under your home, a scan root or a temp root, and must not be the home, a scan root, a project root, a temp root, `/`, `/Users`, `/Volumes/<disk>` or another system location. Symlinks are never followed when sizing or deleting. A temp directory's modification time only changes when entries are added or removed, so an old directory may still contain recently written files — review the Temp group before confirming.
+Before any removal every path must be absolute, exist, live under your home, a scan root or a temp root, and must not be the home, a scan root, a project root, a temp root, `/`, `/Users`, `/Volumes/<disk>` or another system location. Paths failing these rules (e.g. a Flutter SDK under Homebrew's Caskroom) are dropped at scan time instead of being listed and refused. Symlinks are never followed when sizing or deleting; hardlinked files count once and other mounted filesystems are not entered. A temp directory's modification time only changes when entries are added or removed, so an old directory may still contain recently written files — review the Temp group before confirming.
 
 ## Installation
 

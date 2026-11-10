@@ -83,14 +83,22 @@ impl Size {
 pub enum Target {
     /// A file or directory removed with `std::fs`.
     Path { path: PathBuf, kind: EntryKind },
-    /// A command that frees space. `affects` are paths sized before and
-    /// after the command to estimate bytes freed.
+    /// A command that frees space; `freed` says how to measure it.
     Action {
         exe: String,
         args: Vec<String>,
         cwd: Option<PathBuf>,
-        affects: Vec<PathBuf>,
+        freed: Freed,
     },
+}
+
+/// How an action's freed bytes are known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Freed {
+    /// Scan size minus what remains of these paths afterwards.
+    Paths(Vec<PathBuf>),
+    /// The command prints `Total reclaimed space: <size>` (docker prune).
+    Reported,
 }
 
 impl Target {
@@ -108,12 +116,12 @@ impl Target {
         }
     }
 
-    pub fn action(exe: &str, args: &[&str], cwd: Option<PathBuf>, affects: Vec<PathBuf>) -> Self {
+    pub fn action(exe: &str, args: &[&str], cwd: Option<PathBuf>, freed: Freed) -> Self {
         Target::Action {
             exe: exe.to_string(),
             args: args.iter().map(|a| a.to_string()).collect(),
             cwd,
-            affects,
+            freed,
         }
     }
 
@@ -281,7 +289,7 @@ mod tests {
             Category::Docker,
             "g",
             "prune",
-            Target::action("docker", &["system", "prune"], None, vec![]),
+            Target::action("docker", &["system", "prune"], None, Freed::Reported),
             Size::Unknown,
             Tier::Local,
         );
@@ -300,7 +308,7 @@ mod tests {
 
     #[test]
     fn command_line_renders_action() {
-        let t = Target::action("go", &["clean", "-modcache"], None, vec![]);
+        let t = Target::action("go", &["clean", "-modcache"], None, Freed::Paths(vec![]));
         assert_eq!(t.command_line().unwrap(), "$ go clean -modcache");
         assert!(Target::dir(PathBuf::from("/a")).command_line().is_none());
     }
