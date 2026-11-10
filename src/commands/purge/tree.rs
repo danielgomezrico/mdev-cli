@@ -50,7 +50,7 @@ pub struct SelectionTree {
 fn size_key(size: Size) -> (u8, std::cmp::Reverse<u64>) {
     match size {
         Size::Bytes(b) => (0, std::cmp::Reverse(b)),
-        Size::Unknown => (1, std::cmp::Reverse(0)),
+        Size::Unknown | Size::Skipped => (1, std::cmp::Reverse(0)),
     }
 }
 
@@ -85,7 +85,7 @@ impl SelectionTree {
                     .iter()
                     .filter_map(|i| match tree.candidates[i.0].size {
                         Size::Bytes(b) => Some(b),
-                        Size::Unknown => None,
+                        Size::Unknown | Size::Skipped => None,
                     })
                     .collect();
                 if known.is_empty() {
@@ -216,7 +216,7 @@ impl SelectionTree {
         for i in leaves {
             match self.candidates[i.0].size {
                 Size::Bytes(b) => total = total.saturating_add(b),
-                Size::Unknown => unknown = true,
+                Size::Unknown | Size::Skipped => unknown = true,
             }
         }
         (total, unknown)
@@ -228,7 +228,7 @@ impl SelectionTree {
             t.total += 1;
             match c.size {
                 Size::Bytes(b) => t.total_bytes = t.total_bytes.saturating_add(b),
-                Size::Unknown => t.has_unknown = true,
+                Size::Unknown | Size::Skipped => t.has_unknown = true,
             }
             if self.checked[i] {
                 t.selected += 1;

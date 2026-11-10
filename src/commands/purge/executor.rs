@@ -7,7 +7,7 @@ use crate::fs_size::{dir_size, SizeMode};
 use crate::parallel;
 use crate::runner::Runner;
 
-use super::candidate::{EntryKind, ItemId, Target};
+use super::candidate::{EntryKind, ItemId, Size, Target};
 use super::safety::{assert_deletable, SafetyCtx};
 use super::tree::SelectionTree;
 
@@ -82,12 +82,21 @@ pub fn execute(
                 outcomes.push(done(id, size, None, on_done));
                 continue;
             }
-            let before: u64 = affects.iter().map(|p| dir_size(p, opts.size_mode)).sum();
+            // Skipped-size candidates are never walked, not even to measure freed bytes.
+            let measure = tree.candidate(id).size != Size::Skipped;
+            let walk = |ps: &[std::path::PathBuf]| -> u64 {
+                if measure {
+                    ps.iter().map(|p| dir_size(p, opts.size_mode)).sum()
+                } else {
+                    0
+                }
+            };
+            let before = walk(affects);
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
             let cwd_str = cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
             let result = runner.run(exe, &arg_refs, cwd_str.as_deref());
             if result.is_success() {
-                let after: u64 = affects.iter().map(|p| dir_size(p, opts.size_mode)).sum();
+                let after = walk(affects);
                 let freed = if affects.is_empty() {
                     size
                 } else {
@@ -358,6 +367,43 @@ mod tests {
         assert_eq!(out[0].bytes_freed, 500);
         assert!(out[0].error.is_none());
         assert_eq!(out[1].error.as_deref(), Some("daemon not running"));
+    }
+
+    #[test]
+    fn skipped_size_action_is_not_measured() {
+        let home = TempDir::new().unwrap();
+        let wt = home.path().join("wt");
+        fs::create_dir_all(&wt).unwrap();
+        fs::write(wt.join("blob"), vec![0u8; 500]).unwrap();
+        let cand = Candidate::new(
+            Category::Worktrees,
+            "repo",
+            "wt",
+            Target::action("git", &["worktree", "remove"], None, vec![wt.clone()]),
+            Size::Skipped,
+            Tier::Local,
+        );
+        let tree = SelectionTree::build(vec![cand]);
+        struct RmRunner(std::path::PathBuf);
+        impl Runner for RmRunner {
+            fn run(&self, _exe: &str, _args: &[&str], _cwd: Option<&str>) -> RunResult {
+                fs::remove_dir_all(&self.0).unwrap();
+                RunResult::success(String::new())
+            }
+            fn which(&self, _exe: &str) -> Option<String> {
+                None
+            }
+        }
+        let out = execute(
+            &tree,
+            &[ItemId(0)],
+            &RmRunner(wt.clone()),
+            &opts(home.path()),
+            &|_| {},
+        );
+        assert!(out[0].error.is_none());
+        assert_eq!(out[0].bytes_freed, 0, "measuring would report 500");
+        assert!(!wt.exists());
     }
 
     #[test]

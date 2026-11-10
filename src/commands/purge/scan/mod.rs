@@ -92,7 +92,7 @@ pub fn all_scanners() -> Vec<Box<dyn Scanner>> {
 }
 
 /// Run every scanner in parallel, size path candidates that came back
-/// unsized, drop nested duplicates. `on_event` receives live progress.
+/// `Unknown` (`Skipped` stay unmeasured), drop nested duplicates. `on_event` receives live progress.
 pub fn run_all(
     scanners: &[Box<dyn Scanner>],
     ctx: &ScanContext,

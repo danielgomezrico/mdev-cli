@@ -63,14 +63,17 @@ pub enum EntryKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Size {
     Bytes(u64),
+    /// Not measured yet; the scan post-pass sizes it.
     Unknown,
+    /// Never measured on purpose (too slow to walk, e.g. worktrees).
+    Skipped,
 }
 
 impl Size {
     pub fn bytes(self) -> u64 {
         match self {
             Size::Bytes(b) => b,
-            Size::Unknown => 0,
+            Size::Unknown | Size::Skipped => 0,
         }
     }
 }

@@ -24,7 +24,7 @@ impl Scanner for TempScanner {
                 "zombie worktrees",
                 display_path(&z, &ctx.home),
                 Target::dir(z),
-                Size::Unknown,
+                Size::Skipped,
                 Tier::Local,
             ));
         }
@@ -223,6 +223,7 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].group, "zombie worktrees");
         assert!(found[0].label.ends_with("zombie"));
+        assert_eq!(found[0].size, Size::Skipped);
     }
 
     #[test]

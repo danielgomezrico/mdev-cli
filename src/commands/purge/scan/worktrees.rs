@@ -74,7 +74,7 @@ impl Scanner for WorktreesScanner {
                             group.clone(),
                             label,
                             Target::action("git", &args, None, vec![wt.path.clone()]),
-                            ctx.size_of(&wt.path),
+                            Size::Skipped,
                             tier,
                         ));
                     }
@@ -89,7 +89,7 @@ impl Scanner for WorktreesScanner {
                     group.clone(),
                     relative_label(&p, &root, &ctx.home),
                     Target::dir(p),
-                    Size::Unknown,
+                    Size::Skipped,
                     Tier::Local,
                 ));
             }
@@ -694,6 +694,7 @@ branch refs/heads/dirty
         ));
         assert_eq!(by_label("feature-worktree").tier, Tier::Local);
         assert!(root.join("wt/clean").exists());
+        assert!(found.iter().all(|c| c.size == Size::Skipped), "{found:?}");
     }
 
     #[test]
