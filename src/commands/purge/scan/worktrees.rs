@@ -1,8 +1,8 @@
-//! Git worktrees: linked worktrees registered with git, convention-named
-//! worktree folders on disk, and zombie checkouts in temp dirs.
+//! Git worktrees: linked worktrees registered with git, orphaned checkouts
+//! in convention-named worktree folders, and zombie checkouts in temp dirs.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
 use super::{is_heavy_or_owned_dir, ScanContext, Scanner};
@@ -81,9 +81,13 @@ impl Scanner for WorktreesScanner {
                 }
             }
 
-            let fs_candidates = discover_worktree_folders(&root);
-            let (_, fs_only) = union_targets(&git_targets, &fs_candidates);
-            for p in prune_covered_descendants(&fs_only) {
+            // Only orphaned checkouts git no longer knows about; never a
+            // folder holding a git-listed (possibly dirty) worktree.
+            let orphans: Vec<PathBuf> = discover_worktree_folders(&root)
+                .into_iter()
+                .filter(|p| is_zombie(p) && !git_targets.iter().any(|g| g.starts_with(p)))
+                .collect();
+            for p in prune_covered_descendants(&orphans) {
                 out.push(Candidate::new(
                     Category::Worktrees,
                     group.clone(),
@@ -273,34 +277,6 @@ fn push_unique(found: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path: Path
     }
 }
 
-/// Union git paths with FS candidates; return (sorted union, fs-only).
-pub fn union_targets(
-    git_targets: &[PathBuf],
-    fs_candidates: &[PathBuf],
-) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut union: Vec<PathBuf> = Vec::new();
-    let mut fs_only: Vec<PathBuf> = Vec::new();
-    for p in git_targets {
-        if seen.insert(path_key(p)) {
-            union.push(p.clone());
-        }
-    }
-    for p in fs_candidates {
-        if seen.insert(path_key(p)) {
-            union.push(p.clone());
-            fs_only.push(p.clone());
-        }
-    }
-    union.sort();
-    fs_only.sort();
-    (union, fs_only)
-}
-
-fn path_key(p: &Path) -> String {
-    p.to_string_lossy().trim_end_matches('/').to_string()
-}
-
 /// Keep shallowest ancestors only — a parent wipe covers nested children.
 pub fn prune_covered_descendants(paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut sorted: Vec<PathBuf> = paths.to_vec();
@@ -332,6 +308,23 @@ pub fn worktree_gitdir(dir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Linked-worktree checkout whose gitdir is gone (repo deleted or worktree
+/// pruned). A gitdir on an unmounted `/Volumes/<name>` is not gone.
+fn is_zombie(dir: &Path) -> bool {
+    worktree_gitdir(dir).is_some_and(|g| !g.exists() && volume_mounted(&g))
+}
+
+/// False only when `path` lives under a `/Volumes/<name>` that is missing.
+fn volume_mounted(path: &Path) -> bool {
+    let mut comps = path.components();
+    match (comps.next(), comps.next(), comps.next()) {
+        (Some(Component::RootDir), Some(v), Some(name)) if v.as_os_str() == "Volumes" => {
+            Path::new("/Volumes").join(name).exists()
+        }
+        _ => true,
+    }
+}
+
 /// Walk `roots` for linked-worktree checkouts whose gitdir is gone (repo
 /// deleted or worktree pruned). Depth-bounded; skips symlinks; never
 /// descends into a worktree.
@@ -356,10 +349,10 @@ pub fn discover_tmp_zombies(roots: &[PathBuf]) -> Vec<PathBuf> {
                 continue;
             }
             let path = entry.path();
-            match worktree_gitdir(&path) {
-                Some(gitdir) if !gitdir.exists() => found.push(path),
-                Some(_) => {}
-                None => queue.push((path, depth + 1)),
+            if worktree_gitdir(&path).is_none() {
+                queue.push((path, depth + 1));
+            } else if is_zombie(&path) {
+                found.push(path);
             }
         }
     }
@@ -563,23 +556,6 @@ branch refs/heads/dirty
         }
     }
 
-    #[test]
-    fn union_dedupes_fs_matching_porcelain() {
-        let git = vec![
-            PathBuf::from("/repo/.agents/wt/feature"),
-            PathBuf::from("/repo/.agents/wt/dirty"),
-        ];
-        let fs = vec![
-            PathBuf::from("/repo/.agents/wt/feature"),
-            PathBuf::from("/repo/feature-worktree"),
-            PathBuf::from("/repo/worktrees/orphan"),
-        ];
-        let (union, fs_only) = union_targets(&git, &fs);
-        assert_eq!(union.len(), 4);
-        assert_eq!(fs_only.len(), 2);
-        assert!(!fs_only.contains(&PathBuf::from("/repo/.agents/wt/feature")));
-    }
-
     fn write_git_file(dir: &Path, gitdir: &Path) {
         fs::create_dir_all(dir).unwrap();
         fs::write(dir.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
@@ -658,18 +634,21 @@ branch refs/heads/dirty
     }
 
     #[test]
-    fn scanner_marks_dirty_and_locked_worktrees_global_and_lists_fs_only() {
+    fn scanner_marks_dirty_and_locked_worktrees_global_and_lists_zombies_only() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
         mkdir(&root, "wt/clean");
         mkdir(&root, "wt/dirty");
         mkdir(&root, "wt/locked");
         mkdir(&root, "feature-worktree");
+        write_git_file(
+            &root.join("zombie-worktree"),
+            &root.join("gone/.git/worktrees/z"),
+        );
         let porcelain = format!(
             "worktree {r}\nHEAD a\n\nworktree {r}/wt/clean\nHEAD b\n\nworktree {r}/wt/dirty\nHEAD c\n\nworktree {r}/wt/locked\nHEAD d\nlocked\n",
             r = root.display()
         );
-        // `git status` answers: first call (clean) empty, then dirty, then locked clean.
         let runner = FakeRunner::new(&["git"]).respond("git", RunResult::success(porcelain));
         let roots = vec![root.clone()];
         let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
@@ -689,25 +668,67 @@ branch refs/heads/dirty
             assert_eq!(args.iter().filter(|a| *a == "--force").count(), 2);
         }
         assert!(matches!(
-            by_label("feature-worktree").target,
+            by_label("zombie-worktree").target,
             Target::Path { .. }
         ));
-        assert_eq!(by_label("feature-worktree").tier, Tier::Local);
+        assert!(
+            !found.iter().any(|c| c.label.contains("feature-worktree")),
+            "plain folder is not a worktree: {found:?}"
+        );
         assert!(root.join("wt/clean").exists());
         assert!(found.iter().all(|c| c.size == Size::Skipped), "{found:?}");
     }
 
     #[test]
-    fn scanner_without_git_still_lists_fs_folders() {
+    fn scanner_never_emits_dir_containing_git_listed_worktree() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let gitdir = root.join(".git/worktrees/agent-1");
+        fs::create_dir_all(&gitdir).unwrap();
+        write_git_file(&root.join(".claude/worktrees/agent-1"), &gitdir);
+        let porcelain = format!(
+            "worktree {r}\nHEAD a\n\nworktree {r}/.claude/worktrees/agent-1\nHEAD b\n",
+            r = root.display()
+        );
+        let runner = FakeRunner::new(&["git"]).respond("git", RunResult::success(porcelain));
+        let roots = vec![root.clone()];
+        let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
+
+        let found = WorktreesScanner.scan(&c);
+
+        assert!(
+            found.iter().all(|c| c.target.path().is_none()),
+            "no fs path may cover a git worktree: {found:?}"
+        );
+    }
+
+    #[test]
+    fn scanner_without_git_lists_only_zombie_checkouts() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().to_path_buf();
         mkdir(&root, ".worktree/x");
+        let live = root.join("repo/.git/worktrees/live");
+        fs::create_dir_all(&live).unwrap();
+        write_git_file(&root.join(".worktrees/live"), &live);
+        write_git_file(&root.join(".worktrees/dead"), &root.join("gone/x"));
         let runner = FakeRunner::new(&[]);
         let roots = vec![root.clone()];
         let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
         let found = WorktreesScanner.scan(&c);
-        assert_eq!(found.len(), 1);
-        assert!(found[0].label.ends_with(".worktree"));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].label, ".worktrees/dead");
+        assert_eq!(found[0].tier, Tier::Local);
         assert!(runner.calls().is_empty());
+    }
+
+    #[test]
+    fn gitdir_on_unmounted_volume_is_not_a_zombie() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        write_git_file(
+            &root.join("offline"),
+            Path::new("/Volumes/mdev-test-not-mounted-7f3a/repo/.git/worktrees/x"),
+        );
+        assert!(discover_tmp_zombies(&[root.to_path_buf()]).is_empty());
     }
 }

@@ -11,7 +11,7 @@ use crate::models::AppInfo;
 use crate::parallel;
 use crate::runner::Runner;
 
-use super::candidate::{dedupe_covered, display_path, Candidate, Category, Size, Target};
+use super::candidate::{dedupe_covered, display_path, Candidate, Category, Size, Target, Tier};
 
 pub mod android_sdk;
 pub mod docker;
@@ -189,6 +189,22 @@ pub fn child_dirs(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Whether a process whose command line matches `pattern` (ERE) is running.
+/// Unknown (no `pgrep`) counts as running, so callers stay cautious.
+pub fn process_running(ctx: &ScanContext, pattern: &str) -> bool {
+    ctx.runner.which("pgrep").is_none()
+        || ctx.runner.run("pgrep", &["-f", pattern], None).is_success()
+}
+
+/// `Global` while `busy`, so in-use data is never deleted by default.
+pub fn tier_unless_busy(busy: bool) -> Tier {
+    if busy {
+        Tier::Global
+    } else {
+        Tier::Local
+    }
+}
+
 /// Keep only paths that exist (without following a dangling symlink).
 pub fn existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths
@@ -311,7 +327,7 @@ mod tests {
             "a",
             Target::dir(dir),
             Size::Unknown,
-            super::super::candidate::Tier::Local,
+            Tier::Local,
         );
         let scanners: Vec<Box<dyn Scanner>> = vec![Box::new(Fixed(vec![cand]))];
         let runner = FakeRunner::new(&[]);

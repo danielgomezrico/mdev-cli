@@ -61,15 +61,15 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 
 | Category | Items | Default |
 |---|---|---|
-| Projects | per detected project: Flutter `build/ .dart_tool/ ios/Pods android/build …`, Android `build/ app/build .gradle`, iOS `Pods/ build/`, Node `node_modules/ .next/ dist/ …`, Rust `target/`, Go `bin/ pkg/`, Ruby `vendor/bundle .bundle` (+ Rails `tmp/cache`, `log/*.log`), Python `__pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .coverage htmlcov` (+ Django `staticfiles`) | checked; `.venv/ venv/ env/` ◆ |
+| Projects | per detected project: Flutter `build/ .dart_tool/ ios/Pods android/build …`, Android `build/ app/build .gradle`, iOS `Pods/ build/`, Node `node_modules/ .next/ dist/ …`, Rust `target/`, Go `bin/` (only when git-ignored), Ruby `vendor/bundle .bundle` (+ Rails `tmp/cache`, `log/*.log`), Python `__pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .coverage htmlcov` (+ Django `staticfiles`) | checked; `.venv/ venv/ env/` ◆ |
 | Extras | per project: JVM heap dumps / crash logs, core dumps, `npm-debug.log*`, editor backups, `.DS_Store`, `Thumbs.db`, linter caches, `.nyc_output/` | checked |
-| Git worktrees | linked worktrees from `git worktree list` (removed with `git worktree remove --force`) and convention folders (`.worktree/`, `worktrees/*`, `.claude/worktrees/*`, `.agents/wt/*`) | checked; locked or with uncommitted changes ◆ |
-| Temp dirs | entries directly under `/tmp`, `/var/tmp`, `$TMPDIR` owned by you and older than `--tmp-age` days (default 3), plus zombie worktree checkouts anywhere below them. Sockets, FIFOs, symlinks, `com.apple.*`, lock files and live worktrees are never listed | checked |
+| Git worktrees | linked worktrees from `git worktree list` (removed with `git worktree remove --force`) and orphaned checkouts (gitdir gone) in convention folders (`.worktree/`, `worktrees/*`, `.claude/worktrees/*`, `.agents/wt/*`); a folder holding a registered worktree is never listed | checked; locked or with uncommitted changes ◆ |
+| Temp dirs | entries directly under `/tmp`, `/var/tmp`, `$TMPDIR` owned by you with nothing modified within 2 levels for `--tmp-age` days (default 3), plus zombie worktree checkouts anywhere below them (not when the repo's `/Volumes/*` disk is unmounted). Sockets, FIFOs, symlinks, `com.apple.*`, lock files and live worktrees are never listed | checked |
 | Logs | each folder under `~/Library/Logs`, `~/.npm/_logs` | checked |
-| Xcode (macOS) | `DerivedData/*`, `Archives/*`, `iOS/watchOS/tvOS DeviceSupport/*`, Xcode caches, `CoreSimulator/Caches`, simulator device data (named via `simctl`), unavailable simulators | checked; Archives, the 2 newest DeviceSupport versions and simulator data ◆ |
-| Android SDK | `~/.android/cache`, `~/.android/build-cache`, `~/.gradle/daemon`, stale `*.lock` files in AVDs (only when no emulator runs) | checked |
+| Xcode (macOS) | `DerivedData/*`, `Archives/*`, `iOS/watchOS/tvOS DeviceSupport/*`, Xcode caches, `CoreSimulator/Caches`, simulator device data (named via `simctl`, booted ones skipped), unavailable simulators, orphaned simulator dirs | checked; Archives, the 2 newest DeviceSupport versions, simulators, simulator data and DerivedData while Xcode/xcodebuild runs ◆ |
+| Android SDK | `~/.android/cache`, `~/.android/build-cache`, `~/.gradle/daemon`, stale `*.lock` files in AVDs (only when no emulator runs) | checked; `~/.gradle/daemon` while a Gradle daemon runs ◆ |
 | Package caches | `~/.npm`, `~/.pnpm-store`, Yarn, Bun, `~/.pub-cache`, Flutter SDK `bin/cache` (active, FVM and asdf versions), `~/.cargo/registry`, `~/.cargo/git/db`, `~/.gradle/caches`, `~/.gradle/wrapper/dists`, `~/.kotlin`, Go build cache + `go clean -modcache`, pip, poetry, uv, pipenv, bundler, gem, CocoaPods, Homebrew | all ◆ |
-| Docker | `docker system prune -f` (stopped containers, build cache, dangling images) and `docker image prune -af` (all unused images), sized from `docker system df`; only when the daemon answers | prune checked; images ◆ |
+| Docker | `docker builder prune -f` (build cache), `docker container prune -f` (stopped containers) and `docker image prune -af` (all unused images), sized from `docker system df`; only when the daemon answers | build cache checked; containers, images ◆ |
 
 Paths nested under another listed path are collapsed so one wipe covers the tree.
 

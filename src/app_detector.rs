@@ -253,10 +253,11 @@ fn discover_children(
 
     let mut child_found = false;
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+        // Never follow symlinks: they may lead to another volume or loop.
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
             continue;
         }
+        let path = entry.path();
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name.starts_with('.') || is_discovery_skip_dir(name) {
             continue;
@@ -1198,6 +1199,20 @@ mod tests {
                 "group-b/nested/repo3".to_string(),
             ]
         );
+    }
+
+    // A symlinked dir may point at another volume or form a cycle; purge
+    // would then delete through it. Discovery must not follow it.
+    #[cfg(unix)]
+    #[test]
+    fn discover_skips_symlinked_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        seed(&outside, &[Marker::file("ext/Cargo.toml")]);
+        seed(&tmp, &[Marker::file("real/go.mod")]);
+        std::os::unix::fs::symlink(outside.path().join("ext"), tmp.path().join("link")).unwrap();
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(roots(&got, tmp.path()), vec!["real".to_string()]);
     }
 
     // Discovery stops at a project root: a Flutter app's internal android/ios

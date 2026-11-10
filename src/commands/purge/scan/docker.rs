@@ -23,29 +23,40 @@ impl Scanner for DockerScanner {
             return Vec::new();
         }
         let usage = parse_system_df(&df.stdout);
-        let mut out = Vec::new();
-        let local = usage.containers + usage.build_cache;
-        if local > 0 {
-            out.push(Candidate::new(
-                Category::Docker,
-                "docker",
-                "stopped containers, build cache, dangling images",
-                Target::action("docker", &["system", "prune", "-f"], None, vec![]),
-                Size::Bytes(local),
+        // Stopped containers may hold state (e.g. a dev DB): never by default.
+        [
+            (
+                usage.build_cache,
+                "build cache",
+                &["builder", "prune", "-f"][..],
                 Tier::Local,
-            ));
-        }
-        if usage.images > 0 {
-            out.push(Candidate::new(
+            ),
+            (
+                usage.containers,
+                "stopped containers",
+                &["container", "prune", "-f"],
+                Tier::Global,
+            ),
+            (
+                usage.images,
+                "all unused images",
+                &["image", "prune", "-af"],
+                Tier::Global,
+            ),
+        ]
+        .into_iter()
+        .filter(|(bytes, ..)| *bytes > 0)
+        .map(|(bytes, label, args, tier)| {
+            Candidate::new(
                 Category::Docker,
                 "docker",
-                "all unused images",
-                Target::action("docker", &["image", "prune", "-af"], None, vec![]),
-                Size::Bytes(usage.images),
-                Tier::Global,
-            ));
-        }
-        out
+                label,
+                Target::action("docker", args, None, vec![]),
+                Size::Bytes(bytes),
+                tier,
+            )
+        })
+        .collect()
     }
 }
 
@@ -130,21 +141,36 @@ mod tests {
     }
 
     #[test]
-    fn scanner_emits_two_actions_with_tiers() {
+    fn only_build_cache_is_local_containers_and_images_global() {
         let tmp = TempDir::new().unwrap();
         let runner = FakeRunner::new(&["docker"]).respond("docker", RunResult::success(DF.into()));
         let roots: Vec<PathBuf> = vec![];
         let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
         let found = DockerScanner.scan(&c);
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[0].tier, Tier::Local);
-        assert_eq!(found[0].size, Size::Bytes(580_000_000));
-        assert_eq!(found[1].tier, Tier::Global);
-        assert!(found[1]
-            .target
-            .command_line()
-            .unwrap()
-            .contains("image prune -af"));
+        let got: Vec<(String, Tier, Size)> = found
+            .iter()
+            .map(|c| (c.target.command_line().unwrap(), c.tier, c.size))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    "$ docker builder prune -f".into(),
+                    Tier::Local,
+                    Size::Bytes(500_000_000)
+                ),
+                (
+                    "$ docker container prune -f".into(),
+                    Tier::Global,
+                    Size::Bytes(80_000_000)
+                ),
+                (
+                    "$ docker image prune -af".into(),
+                    Tier::Global,
+                    Size::Bytes(1_500_000_000)
+                ),
+            ]
+        );
     }
 
     #[test]

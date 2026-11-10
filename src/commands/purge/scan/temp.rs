@@ -74,8 +74,9 @@ pub fn is_protected_name(name: &str) -> bool {
 }
 
 /// Direct children of `root` owned by `owner` (when known), not sockets /
-/// FIFOs / symlinks, not protected names, not live git worktrees, with a
-/// modification time older than `age`. `(path, is_dir)` sorted by path.
+/// FIFOs / symlinks, not protected names, not git worktree checkouts, with
+/// no modification within `STALE_DEPTH` levels newer than `age`.
+/// `(path, is_dir)` sorted by path.
 pub fn stale_entries(
     root: &Path,
     now: SystemTime,
@@ -110,20 +111,37 @@ pub fn stale_entries(
                 continue;
             }
         }
-        if ft.is_dir() {
-            if let Some(gitdir) = worktree_gitdir(&path) {
-                if gitdir.exists() {
-                    continue;
-                }
-            }
+        // Worktree checkouts: live ones are kept, zombies are listed separately.
+        if ft.is_dir() && worktree_gitdir(&path).is_some() {
+            continue;
         }
-        match meta.modified() {
-            Ok(m) if m < cutoff => out.push((path, ft.is_dir())),
-            _ => {}
+        if newest_mtime(&path, &meta, STALE_DEPTH).is_some_and(|m| m < cutoff) {
+            out.push((path, ft.is_dir()));
         }
     }
     out.sort();
     out
+}
+
+/// Levels below a temp entry whose mtimes count toward its age.
+const STALE_DEPTH: usize = 2;
+
+/// Newest mtime of `path` and its descendants down to `depth` levels,
+/// without following symlinks. `None` when `path`'s own mtime is unreadable.
+fn newest_mtime(path: &Path, meta: &std::fs::Metadata, depth: usize) -> Option<SystemTime> {
+    let own = meta.modified().ok()?;
+    if depth == 0 || !meta.is_dir() {
+        return Some(own);
+    }
+    let children = std::fs::read_dir(path).into_iter().flatten().flatten();
+    Some(
+        children
+            .filter_map(|e| {
+                let m = std::fs::symlink_metadata(e.path()).ok()?;
+                newest_mtime(&e.path(), &m, depth - 1)
+            })
+            .fold(own, SystemTime::max),
+    )
 }
 
 #[cfg(unix)]
@@ -172,6 +190,8 @@ mod tests {
         let root = tmp.path();
         fs::create_dir_all(root.join("old-dir/inner")).unwrap();
         fs::write(root.join("old-dir/inner/f"), b"x").unwrap();
+        age(&root.join("old-dir/inner/f"), 10);
+        age(&root.join("old-dir/inner"), 10);
         age(&root.join("old-dir"), 10);
         fs::write(root.join("old.txt"), b"x").unwrap();
         age(&root.join("old.txt"), 10);
@@ -224,6 +244,43 @@ mod tests {
         assert_eq!(found[0].group, "zombie worktrees");
         assert!(found[0].label.ends_with("zombie"));
         assert_eq!(found[0].size, Size::Skipped);
+    }
+
+    #[test]
+    fn recent_write_two_levels_down_keeps_dir_fresh() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("session/inner")).unwrap();
+        fs::write(root.join("session/inner/live.json"), b"x").unwrap();
+        age(&root.join("session/inner"), 10);
+        age(&root.join("session"), 10);
+        let got = stale_entries(
+            root,
+            SystemTime::now(),
+            Duration::from_secs(3 * 86_400),
+            None,
+        );
+        assert!(got.is_empty(), "{got:?}");
+    }
+
+    #[test]
+    fn worktree_on_unmounted_volume_is_not_stale() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("offline")).unwrap();
+        fs::write(
+            root.join("offline/.git"),
+            "gitdir: /Volumes/mdev-test-not-mounted-7f3a/r/.git/worktrees/x\n",
+        )
+        .unwrap();
+        age(&root.join("offline"), 30);
+        let got = stale_entries(
+            root,
+            SystemTime::now(),
+            Duration::from_secs(3 * 86_400),
+            None,
+        );
+        assert!(got.is_empty(), "{got:?}");
     }
 
     #[test]

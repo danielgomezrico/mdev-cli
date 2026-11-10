@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::models::ProjectType;
+use crate::runner::Runner;
 
 use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
 use super::{is_heavy_or_owned_dir, ScanContext, Scanner};
@@ -19,7 +20,7 @@ impl Scanner for ProjectsScanner {
         for (info, root) in ctx.projects {
             let group = display_path(root, &ctx.home);
             ctx.note(format!("checking {group}"));
-            for (rel, tier) in project_targets(&info.project_type, root) {
+            for (rel, tier) in project_targets(&info.project_type, root, ctx.runner) {
                 let path = root.join(&rel);
                 if std::fs::symlink_metadata(&path).is_err() {
                     continue;
@@ -73,7 +74,6 @@ const NODE: &[&str] = &[
     "coverage",
 ];
 const RUST: &[&str] = &["target"];
-const GO: &[&str] = &["bin", "pkg"];
 const RUBY: &[&str] = &["vendor/bundle", ".bundle"];
 const RAILS: &[&str] = &["tmp/cache"];
 const PYTHON_ROOT: &[&str] = &[".coverage", "htmlcov"];
@@ -90,7 +90,11 @@ const PY_MAX_DEPTH: usize = 10;
 
 /// Relative purge targets for a project of `kind` at `root`, with their tier.
 /// Existence is not checked here.
-pub fn project_targets(kind: &ProjectType, root: &Path) -> Vec<(PathBuf, Tier)> {
+pub fn project_targets(
+    kind: &ProjectType,
+    root: &Path,
+    runner: &dyn Runner,
+) -> Vec<(PathBuf, Tier)> {
     let local = |list: &[&str]| -> Vec<(PathBuf, Tier)> {
         list.iter()
             .map(|r| (PathBuf::from(r), Tier::Local))
@@ -102,9 +106,13 @@ pub fn project_targets(kind: &ProjectType, root: &Path) -> Vec<(PathBuf, Tier)> 
         ProjectType::Ios => local(IOS),
         ProjectType::Node { .. } => local(NODE),
         ProjectType::Rust => local(RUST),
+        // `pkg/` is a common source layout; `bin/` only when git ignores it.
         ProjectType::Go => {
-            if root.join("go.mod").exists() {
-                local(GO)
+            if root.join("go.mod").exists()
+                && root.join("bin").is_dir()
+                && git_ignores(runner, root, "bin")
+            {
+                local(&["bin"])
             } else {
                 Vec::new()
             }
@@ -132,6 +140,15 @@ pub fn project_targets(kind: &ProjectType, root: &Path) -> Vec<(PathBuf, Tier)> 
         }
         ProjectType::Unknown => Vec::new(),
     }
+}
+
+/// `git check-ignore` says `rel` is ignored under `root`. No git → false.
+fn git_ignores(runner: &dyn Runner, root: &Path, rel: &str) -> bool {
+    let root = root.to_string_lossy();
+    runner.which("git").is_some()
+        && runner
+            .run("git", &["-C", &root, "check-ignore", "-q", rel], None)
+            .is_success()
 }
 
 fn rails_logs(root: &Path) -> Vec<(PathBuf, Tier)> {
@@ -199,6 +216,7 @@ mod tests {
     use super::super::test_support::{ctx, FakeRunner};
     use super::*;
     use crate::models::{AppInfo, NodePm};
+    use crate::runner::RunResult;
     use std::fs;
     use tempfile::TempDir;
 
@@ -281,23 +299,57 @@ mod tests {
     fn go_without_go_mod_has_no_targets_and_rails_lists_logs() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
+        let runner = FakeRunner::new(&["git"]).respond("git", RunResult::success(String::new()));
         fs::create_dir_all(root.join("bin")).unwrap();
-        assert!(project_targets(&ProjectType::Go, root).is_empty());
-        fs::write(root.join("go.mod"), b"module x").unwrap();
-        assert_eq!(project_targets(&ProjectType::Go, root).len(), 2);
+        assert!(project_targets(&ProjectType::Go, root, &runner).is_empty());
 
         fs::create_dir_all(root.join("config")).unwrap();
         fs::write(root.join("config/application.rb"), b"").unwrap();
         fs::create_dir_all(root.join("log")).unwrap();
         fs::write(root.join("log/development.log"), b"").unwrap();
         fs::write(root.join("log/.keep"), b"").unwrap();
-        let rails: Vec<PathBuf> = project_targets(&ProjectType::Ruby { rails: true }, root)
-            .into_iter()
-            .map(|(p, _)| p)
-            .collect();
+        let rails: Vec<PathBuf> =
+            project_targets(&ProjectType::Ruby { rails: true }, root, &runner)
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect();
         assert!(rails.contains(&PathBuf::from("tmp/cache")));
         assert!(rails.contains(&PathBuf::from("log/development.log")));
         assert!(!rails.contains(&PathBuf::from("log/.keep")));
+    }
+
+    #[test]
+    fn go_never_lists_pkg_and_lists_bin_only_when_git_ignores_it() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("go.mod"), b"module x").unwrap();
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("pkg")).unwrap();
+        let targets = |runner: &FakeRunner| -> Vec<PathBuf> {
+            project_targets(&ProjectType::Go, root, runner)
+                .into_iter()
+                .map(|(p, _)| p)
+                .collect()
+        };
+
+        let ignored = FakeRunner::new(&["git"]).respond("git", RunResult::success(String::new()));
+        assert_eq!(targets(&ignored), vec![PathBuf::from("bin")]);
+        let root_str = root.to_string_lossy();
+        assert_eq!(
+            ignored.calls(),
+            vec![vec![
+                "git",
+                "-C",
+                root_str.as_ref(),
+                "check-ignore",
+                "-q",
+                "bin"
+            ]]
+        );
+        let tracked =
+            FakeRunner::new(&["git"]).respond("git", RunResult::failure(1, String::new()));
+        assert!(targets(&tracked).is_empty());
+        assert!(targets(&FakeRunner::new(&[])).is_empty());
     }
 
     #[test]

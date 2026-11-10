@@ -5,12 +5,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
-use super::{child_dirs, existing, ScanContext, Scanner};
+use super::{child_dirs, existing, process_running, tier_unless_busy, ScanContext, Scanner};
 
 pub struct XcodeScanner;
 
 /// How many newest DeviceSupport versions stay unchecked by default.
 const KEEP_DEVICE_SUPPORT: usize = 2;
+/// Processes that write DerivedData.
+const XCODE_PROCESS: &str = "Xcode.app/Contents/MacOS/Xcode|xcodebuild";
 
 impl Scanner for XcodeScanner {
     fn category(&self) -> Category {
@@ -30,15 +32,19 @@ impl Scanner for XcodeScanner {
                 .unwrap_or_default()
         };
 
-        for p in child_dirs(&xcode.join("DerivedData")) {
-            out.push(Candidate::new(
-                Category::Xcode,
-                "DerivedData",
-                name_of(&p),
-                Target::dir(p),
-                Size::Unknown,
-                Tier::Local,
-            ));
+        let derived = child_dirs(&xcode.join("DerivedData"));
+        if !derived.is_empty() {
+            let tier = tier_unless_busy(process_running(ctx, XCODE_PROCESS));
+            for p in derived {
+                out.push(Candidate::new(
+                    Category::Xcode,
+                    "DerivedData",
+                    name_of(&p),
+                    Target::dir(p),
+                    Size::Unknown,
+                    tier,
+                ));
+            }
         }
 
         for p in child_dirs(&xcode.join("Archives")) {
@@ -137,6 +143,7 @@ pub struct SimDevice {
     pub name: String,
     pub runtime: String,
     pub available: bool,
+    pub booted: bool,
 }
 
 /// Parse `xcrun simctl list devices -j`.
@@ -170,6 +177,7 @@ pub fn parse_simctl(json: &str) -> Vec<SimDevice> {
                         .get("isAvailable")
                         .and_then(|a| a.as_bool())
                         .unwrap_or(true),
+                    booted: d.get("state").and_then(|s| s.as_str()) == Some("Booted"),
                 });
             }
         }
@@ -206,42 +214,33 @@ fn simulators(ctx: &ScanContext, devices_dir: &Path) -> Vec<Candidate> {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let data = dir.join("data");
         match known.get(&udid) {
+            Some(d) if d.booted => {}
             Some(d) if !d.available => unavailable.push(dir),
-            Some(d) => {
-                let data = dir.join("data");
+            Some(d) if data.is_dir() => {
+                out.push(sim_data(data, format!("{} ({})", d.name, d.runtime)))
+            }
+            Some(_) => {}
+            None if known.is_empty() => {
                 if data.is_dir() {
-                    out.push(Candidate::new(
-                        Category::Xcode,
-                        "Simulator device data",
-                        format!("{} ({})", d.name, d.runtime),
-                        Target::dir(data),
-                        Size::Unknown,
-                        Tier::Global,
-                    ));
+                    out.push(sim_data(data, udid));
                 }
             }
-            None => {
-                if known.is_empty() {
-                    let data = dir.join("data");
-                    if data.is_dir() {
-                        out.push(Candidate::new(
-                            Category::Xcode,
-                            "Simulator device data",
-                            udid,
-                            Target::dir(data),
-                            Size::Unknown,
-                            Tier::Global,
-                        ));
-                    }
-                } else {
-                    unavailable.push(dir);
-                }
-            }
+            // Not known to simctl: `delete unavailable` would not touch it.
+            None => out.push(Candidate::new(
+                Category::Xcode,
+                "Simulators",
+                format!("{udid} (orphaned)"),
+                Target::dir(dir),
+                Size::Unknown,
+                Tier::Global,
+            )),
         }
     }
     if !unavailable.is_empty() {
         let bytes: u64 = unavailable.iter().map(|p| ctx.size_of(p).bytes()).sum();
+        // Global: sims of a runtime that is merely unmounted show as unavailable.
         out.push(Candidate::new(
             Category::Xcode,
             "Simulators",
@@ -253,10 +252,21 @@ fn simulators(ctx: &ScanContext, devices_dir: &Path) -> Vec<Candidate> {
                 unavailable,
             ),
             Size::Bytes(bytes),
-            Tier::Local,
+            Tier::Global,
         ));
     }
     out
+}
+
+fn sim_data(data: PathBuf, label: String) -> Candidate {
+    Candidate::new(
+        Category::Xcode,
+        "Simulator device data",
+        label,
+        Target::dir(data),
+        Size::Unknown,
+        Tier::Global,
+    )
 }
 
 #[cfg(test)]
@@ -335,6 +345,76 @@ mod tests {
         let unavailable = find("1 unavailable simulator(s)");
         assert_eq!(unavailable.size, Size::Bytes(100));
         assert!(matches!(unavailable.target, Target::Action { .. }));
+    }
+
+    fn sim_fixture(home: &Path) {
+        let devices = home.join("Library/Developer/CoreSimulator/Devices");
+        for udid in ["AAA", "BBB", "CCC", "DDD"] {
+            fs::create_dir_all(devices.join(udid).join("data")).unwrap();
+        }
+    }
+
+    const SIMS: &str = r#"{"devices":{"com.apple.CoreSimulator.SimRuntime.iOS-17-2":[
+        {"udid":"AAA","name":"iPhone 15","isAvailable":true,"state":"Shutdown"},
+        {"udid":"BBB","name":"Old","isAvailable":false,"state":"Shutdown"},
+        {"udid":"DDD","name":"Live","isAvailable":true,"state":"Booted"}]}}"#;
+
+    #[test]
+    fn unavailable_sims_are_global_and_orphan_dirs_listed_on_their_own() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        sim_fixture(home);
+        let runner = FakeRunner::new(&["xcrun"]).respond("xcrun", RunResult::success(SIMS.into()));
+        let roots: Vec<PathBuf> = vec![];
+        let found = XcodeScanner.scan(&ctx(&roots, &[], home, vec![], &runner));
+
+        let action = found
+            .iter()
+            .find(|c| matches!(c.target, Target::Action { .. }))
+            .unwrap_or_else(|| panic!("{found:?}"));
+        assert_eq!(action.tier, Tier::Global);
+        let Target::Action { affects, .. } = &action.target else {
+            unreachable!()
+        };
+        assert_eq!(affects.len(), 1);
+        assert!(affects[0].ends_with("BBB"));
+        let orphan = found
+            .iter()
+            .find(|c| c.target.path().is_some_and(|p| p.ends_with("CCC")))
+            .unwrap_or_else(|| panic!("{found:?}"));
+        assert_eq!(orphan.tier, Tier::Global);
+    }
+
+    #[test]
+    fn booted_simulator_data_is_not_offered() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        sim_fixture(home);
+        let runner = FakeRunner::new(&["xcrun"]).respond("xcrun", RunResult::success(SIMS.into()));
+        let roots: Vec<PathBuf> = vec![];
+        let found = XcodeScanner.scan(&ctx(&roots, &[], home, vec![], &runner));
+        assert!(found.iter().any(|c| c.label.starts_with("iPhone 15")));
+        assert!(
+            !found.iter().any(|c| c.label.starts_with("Live")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn derived_data_is_global_while_xcode_runs() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        fs::create_dir_all(home.join("Library/Developer/Xcode/DerivedData/App-abc")).unwrap();
+        let roots: Vec<PathBuf> = vec![];
+        let tier = |runner: &FakeRunner| {
+            XcodeScanner.scan(&ctx(&roots, &[], home, vec![], runner))[0].tier
+        };
+        let busy = FakeRunner::new(&["pgrep"]).respond("pgrep", RunResult::success("1".into()));
+        let idle =
+            FakeRunner::new(&["pgrep"]).respond("pgrep", RunResult::failure(1, String::new()));
+        assert_eq!(tier(&busy), Tier::Global);
+        assert_eq!(tier(&idle), Tier::Local);
+        assert_eq!(tier(&FakeRunner::new(&[])), Tier::Global);
     }
 
     #[test]

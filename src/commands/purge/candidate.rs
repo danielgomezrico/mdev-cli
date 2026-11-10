@@ -123,7 +123,7 @@ impl Target {
         }
     }
 
-    /// Shell-like rendering of an action, e.g. `$ docker system prune -f`.
+    /// Shell-like rendering of an action, e.g. `$ docker builder prune -f`.
     pub fn command_line(&self) -> Option<String> {
         match self {
             Target::Action { exe, args, .. } => Some(format!("$ {} {}", exe, args.join(" "))),

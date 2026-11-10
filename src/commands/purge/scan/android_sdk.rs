@@ -3,9 +3,12 @@
 use std::path::PathBuf;
 
 use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
-use super::{child_dirs, existing, ScanContext, Scanner};
+use super::{child_dirs, existing, process_running, tier_unless_busy, ScanContext, Scanner};
 
 pub struct AndroidSdkScanner;
+
+const EMULATOR_PROCESS: &str = "qemu-system";
+const GRADLE_DAEMON_PROCESS: &str = "GradleDaemon";
 
 impl Scanner for AndroidSdkScanner {
     fn category(&self) -> Category {
@@ -20,23 +23,29 @@ impl Scanner for AndroidSdkScanner {
         let gradle_home = std::env::var("GRADLE_USER_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| home.join(".gradle"));
+        let daemon = gradle_home.join("daemon");
         for p in existing(vec![
             android.join("cache"),
             android.join("build-cache"),
-            gradle_home.join("daemon"),
+            daemon.clone(),
         ]) {
+            let tier = if p == daemon {
+                tier_unless_busy(process_running(ctx, GRADLE_DAEMON_PROCESS))
+            } else {
+                Tier::Local
+            };
             out.push(Candidate::new(
                 Category::Android,
                 "SDK caches",
                 display_path(&p, home),
                 Target::dir(p),
                 Size::Unknown,
-                Tier::Local,
+                tier,
             ));
         }
 
         let locks = avd_lock_files(&android.join("avd"));
-        if !locks.is_empty() && !emulator_running(ctx) {
+        if !locks.is_empty() && !process_running(ctx, EMULATOR_PROCESS) {
             for p in locks {
                 out.push(Candidate::new(
                     Category::Android,
@@ -70,15 +79,6 @@ pub fn avd_lock_files(avd_dir: &std::path::Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
-}
-
-fn emulator_running(ctx: &ScanContext) -> bool {
-    if ctx.runner.which("pgrep").is_none() {
-        return true; // cannot tell — assume busy, keep the locks
-    }
-    ctx.runner
-        .run("pgrep", &["-f", "qemu-system"], None)
-        .is_success()
 }
 
 #[cfg(test)]
@@ -130,5 +130,21 @@ mod tests {
         let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
         let found = AndroidSdkScanner.scan(&c);
         assert!(found.iter().all(|c| !c.label.ends_with(".lock")));
+    }
+
+    #[test]
+    fn gradle_daemon_dir_is_global_while_a_daemon_runs() {
+        let tmp = TempDir::new().unwrap();
+        fixture(tmp.path());
+        let runner = FakeRunner::new(&["pgrep"]).respond("pgrep", RunResult::success("123".into()));
+        let roots: Vec<PathBuf> = vec![];
+        let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
+        let found = AndroidSdkScanner.scan(&c);
+        let daemon = found
+            .iter()
+            .find(|c| c.label == "~/.gradle/daemon")
+            .unwrap_or_else(|| panic!("{found:?}"));
+        assert_eq!(daemon.tier, Tier::Global);
+        assert_eq!(found[0].tier, Tier::Local, "{found:?}");
     }
 }

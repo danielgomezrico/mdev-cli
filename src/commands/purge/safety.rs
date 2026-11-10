@@ -30,8 +30,8 @@ const FORBIDDEN: &[&str] = &[
 ];
 
 /// Ok when `path` is absolute, exists, is not a protected location, is not a
-/// scan/project/tmp root or the home itself, and lives under the home, a
-/// scan root, or a tmp root.
+/// scan/project/tmp root or the home itself, and lives (also after resolving
+/// its parent's symlinks) under the home, a scan root, or a tmp root.
 pub fn assert_deletable(path: &Path, ctx: &SafetyCtx) -> Result<(), String> {
     if !path.is_absolute() {
         return Err(format!("{}: not an absolute path", path.display()));
@@ -54,10 +54,22 @@ pub fn assert_deletable(path: &Path, ctx: &SafetyCtx) -> Result<(), String> {
             return Err(format!("{}: is a {}", path.display(), what));
         }
     }
+    // Resolve the parent so a symlinked ancestor cannot lead outside the roots.
+    let resolved = path
+        .parent()
+        .and_then(|p| std::fs::canonicalize(p).ok())
+        .zip(path.file_name())
+        .map(|(parent, name)| parent.join(name))
+        .ok_or_else(|| format!("{}: cannot resolve parent directory", path.display()))?;
     let allowed = std::iter::once(&ctx.home)
         .chain(ctx.scan_roots.iter())
         .chain(ctx.tmp_roots.iter())
-        .any(|root| !root.as_os_str().is_empty() && path.starts_with(root));
+        .filter(|root| !root.as_os_str().is_empty())
+        .any(|root| {
+            path.starts_with(root)
+                && resolved
+                    .starts_with(std::fs::canonicalize(root).unwrap_or_else(|_| root.clone()))
+        });
     if !allowed {
         return Err(format!(
             "{}: outside home, scan roots and temp roots",
@@ -133,5 +145,27 @@ mod tests {
             assert!(assert_deletable(&p, &c).is_ok(), "{}", p.display());
         }
         assert!(assert_deletable(&home.path().join("missing"), &c).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_paths_reached_through_a_symlinked_parent() {
+        let home = TempDir::new().unwrap();
+        let scan = TempDir::new().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let elsewhere = TempDir::new().unwrap();
+        let c = ctx(home.path(), scan.path(), tmp.path());
+        std::fs::create_dir_all(elsewhere.path().join("target")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), scan.path().join("link")).unwrap();
+        assert!(assert_deletable(&scan.path().join("link/target"), &c).is_err());
+    }
+
+    #[test]
+    fn refuses_when_parent_cannot_be_resolved() {
+        let home = TempDir::new().unwrap();
+        let scan = TempDir::new().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let c = ctx(home.path(), scan.path(), tmp.path());
+        assert!(assert_deletable(&scan.path().join("gone/x"), &c).is_err());
     }
 }
