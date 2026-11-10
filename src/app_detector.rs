@@ -202,7 +202,9 @@ fn is_flutter_platform_subdir(parent_pt: &ProjectType, child_name: &str) -> bool
 ///     self, then always walk children first. Container dirs like `$HOME`
 ///     often carry stray `package.json` / `Gemfile` markers — if any child
 ///     project exists, the root is not recorded. Only when no child project
-///     is found is the scan root kept (e.g. you `cd`'d into a single repo).
+///     is found is the scan root kept (e.g. you `cd`'d into a single repo) —
+///     unless it is a git repo root (Cargo workspace, plugin + `example/`):
+///     then it is kept alongside its children.
 ///   • **Deeper levels**: classify self; on match record and stop (project
 ///     internals are not separate projects); on unknown recurse into children.
 fn discover_recursive(
@@ -272,7 +274,8 @@ fn discover_children(
         }
     }
 
-    if is_scan_root && !child_found && *parent_pt != ProjectType::Unknown {
+    let repo_root = dir.join(".git").exists();
+    if is_scan_root && (!child_found || repo_root) && *parent_pt != ProjectType::Unknown {
         out.push((build_app_info(dir, parent_pt), dir.to_path_buf()));
     }
 }
@@ -1333,6 +1336,26 @@ mod tests {
         );
         let got = AppDetector::new().discover_projects(tmp.path());
         assert_eq!(roots(&got, tmp.path()), vec!["projects/foo".to_string()]);
+    }
+
+    // A repo-root project (Cargo workspace, Flutter plugin + example/) owns
+    // the biggest artifacts: it is kept alongside its sub-projects.
+    #[test]
+    fn discover_repo_root_project_kept_with_children() {
+        let tmp = TempDir::new().unwrap();
+        seed(
+            &tmp,
+            &[
+                Marker::file(".git/HEAD"),
+                Marker::file("Cargo.toml"),
+                Marker::file("crates/core/Cargo.toml"),
+            ],
+        );
+        let got = AppDetector::new().discover_projects(tmp.path());
+        assert_eq!(
+            roots(&got, tmp.path()),
+            vec!["".to_string(), "crates/core".to_string()]
+        );
     }
 
     // A standalone project at the scan root (no child projects) is still found.

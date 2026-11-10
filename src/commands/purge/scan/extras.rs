@@ -80,12 +80,14 @@ pub fn is_extra_dir(name: &str) -> bool {
     matches!(name, ".nyc_output")
 }
 
-/// Directories other scanners own — skip so paths are not double-listed.
+/// Directories other scanners own — skip so paths are not double-listed —
+/// plus macOS `Library` (huge, privacy-prompting, never holds dev junk).
 fn is_skip_dir(name: &str) -> bool {
     is_heavy_or_owned_dir(name)
         || matches!(
             name,
-            ".next"
+            "Library"
+                | ".next"
                 | ".nuxt"
                 | ".turbo"
                 | ".vite"
@@ -210,6 +212,18 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert!(found[0].0.ends_with(".DS_Store"));
         assert!(!found[0].0.to_string_lossy().contains("node_modules"));
+    }
+
+    #[test]
+    fn never_walks_macos_library() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("Library/Caches")).unwrap();
+        fs::create_dir_all(root.join("a")).unwrap();
+        fs::write(root.join("Library/Caches/.DS_Store"), b"x").unwrap();
+        fs::write(root.join("a/.DS_Store"), b"x").unwrap();
+        let found = find_extras(root);
+        assert_eq!(found, vec![(root.join("a/.DS_Store"), false)]);
     }
 
     #[test]

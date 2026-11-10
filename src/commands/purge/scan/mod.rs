@@ -9,9 +9,9 @@ use std::time::{Duration, SystemTime};
 use crate::fs_size::{dir_size, SizeMode};
 use crate::models::AppInfo;
 use crate::parallel;
-use crate::runner::Runner;
+use crate::runner::{Runner, Timed};
 
-use super::candidate::{dedupe_covered, display_path, Candidate, Category, Size, Target, Tier};
+use super::candidate::{dedupe_covered, Candidate, Category, Size, Target, Tier};
 
 pub mod android_sdk;
 pub mod docker;
@@ -22,6 +22,10 @@ pub mod projects;
 pub mod temp;
 pub mod worktrees;
 pub mod xcode;
+
+/// Longest any scan-time command may run (docker daemon starting, `simctl`
+/// after an Xcode update, CLT install dialog…) before it counts as failed.
+pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Something a scanner is doing right now, for the progress display.
 pub type ProgressSink<'a> = dyn Fn(&str) + Sync + 'a;
@@ -60,12 +64,6 @@ pub struct ScanContext<'a> {
 }
 
 impl<'a> ScanContext<'a> {
-    /// Size `path`, telling the progress display which path is being walked.
-    pub fn size_of(&self, path: &Path) -> Size {
-        self.note(format!("sizing {}", display_path(path, &self.home)));
-        Size::Bytes(dir_size(path, self.size_mode))
-    }
-
     /// Report the current activity (shown next to the category spinner).
     pub fn note(&self, msg: impl AsRef<str>) {
         (self.progress)(msg.as_ref());
@@ -91,17 +89,20 @@ pub fn all_scanners() -> Vec<Box<dyn Scanner>> {
     ]
 }
 
-/// Run every scanner in parallel, size path candidates that came back
-/// `Unknown` (`Skipped` stay unmeasured), drop nested duplicates. `on_event` receives live progress.
+/// Run every scanner in parallel — their commands bounded by `SCAN_TIMEOUT` —
+/// size path candidates that came back `Unknown` (`Skipped` stay unmeasured),
+/// drop nested duplicates. `on_event` receives live progress.
 pub fn run_all(
     scanners: &[Box<dyn Scanner>],
     ctx: &ScanContext,
     on_event: &(dyn Fn(ScanEvent) + Sync),
 ) -> Vec<Candidate> {
+    let timed = Timed::new(ctx.runner, SCAN_TIMEOUT);
     let per_scanner: Vec<Vec<Candidate>> = parallel::map(scanners.iter().collect(), |s| {
         let cat = s.category();
         let sink = move |msg: &str| on_event(ScanEvent::Note(cat, msg.to_string()));
         let local = ScanContext {
+            runner: &timed,
             progress: &sink,
             ..ctx.clone()
         };
@@ -118,14 +119,10 @@ pub fn run_all(
         .count();
     on_event(ScanEvent::Sized { done: 0, total });
     let done = AtomicUsize::new(0);
-    let quiet = ScanContext {
-        progress: silent(),
-        ..ctx.clone()
-    };
     parallel::map(deduped, |mut c| {
         if c.size == Size::Unknown {
             if let Target::Path { path, .. } = &c.target {
-                c.size = quiet.size_of(path);
+                c.size = Size::Bytes(dir_size(path, ctx.size_mode));
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 on_event(ScanEvent::Sized { done: n, total });
             }
@@ -225,6 +222,8 @@ pub(crate) mod test_support {
         pub tools: Vec<&'static str>,
         pub responses: Vec<(&'static str, RunResult)>,
         pub calls: Mutex<Vec<Vec<String>>>,
+        /// Timeout of every `run_timeout` call, in call order.
+        pub timeouts: Mutex<Vec<Duration>>,
     }
 
     impl FakeRunner {
@@ -233,6 +232,7 @@ pub(crate) mod test_support {
                 tools: tools.to_vec(),
                 responses: Vec::new(),
                 calls: Mutex::new(Vec::new()),
+                timeouts: Mutex::new(Vec::new()),
             }
         }
 
@@ -256,6 +256,17 @@ pub(crate) mod test_support {
                 .find(|(exe, _)| *exe == executable)
                 .map(|(_, r)| r.clone())
                 .unwrap_or_else(|| RunResult::failure(127, format!("{executable}: not scripted")))
+        }
+
+        fn run_timeout(
+            &self,
+            executable: &str,
+            args: &[&str],
+            cwd: Option<&str>,
+            timeout: Duration,
+        ) -> RunResult {
+            self.timeouts.lock().unwrap().push(timeout);
+            self.run(executable, args, cwd)
         }
 
         fn which(&self, executable: &str) -> Option<String> {
@@ -302,6 +313,28 @@ mod tests {
     use crate::fs_size::SizeMode;
     use std::sync::Mutex;
     use tempfile::TempDir;
+
+    struct Probe;
+
+    impl Scanner for Probe {
+        fn category(&self) -> Category {
+            Category::Docker
+        }
+        fn scan(&self, ctx: &ScanContext) -> Vec<Candidate> {
+            ctx.runner.run("docker", &["info"], None);
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn scanner_commands_run_with_a_timeout() {
+        let runner = FakeRunner::new(&[]);
+        let roots: Vec<PathBuf> = vec![];
+        let tmp = TempDir::new().unwrap();
+        let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
+        run_all(&[Box::new(Probe) as Box<dyn Scanner>], &c, &|_| {});
+        assert_eq!(*runner.timeouts.lock().unwrap(), vec![SCAN_TIMEOUT]);
+    }
 
     struct Fixed(Vec<Candidate>);
 

@@ -239,7 +239,6 @@ fn simulators(ctx: &ScanContext, devices_dir: &Path) -> Vec<Candidate> {
         }
     }
     if !unavailable.is_empty() {
-        let bytes: u64 = unavailable.iter().map(|p| ctx.size_of(p).bytes()).sum();
         // Global: sims of a runtime that is merely unmounted show as unavailable.
         out.push(Candidate::new(
             Category::Xcode,
@@ -251,7 +250,7 @@ fn simulators(ctx: &ScanContext, devices_dir: &Path) -> Vec<Candidate> {
                 None,
                 unavailable,
             ),
-            Size::Bytes(bytes),
+            Size::Skipped,
             Tier::Global,
         ));
     }
@@ -343,7 +342,7 @@ mod tests {
         assert_eq!(find("15.5 (19F70)").tier, Tier::Local);
         assert_eq!(find("iPhone 15 (iOS.17.2)").tier, Tier::Global);
         let unavailable = find("1 unavailable simulator(s)");
-        assert_eq!(unavailable.size, Size::Bytes(100));
+        assert_eq!(unavailable.size, Size::Skipped, "Global is never sized");
         assert!(matches!(unavailable.target, Target::Action { .. }));
     }
 

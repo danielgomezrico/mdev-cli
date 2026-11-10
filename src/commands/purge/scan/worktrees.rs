@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::super::candidate::{display_path, Candidate, Category, Size, Target, Tier};
 use super::{is_heavy_or_owned_dir, ScanContext, Scanner};
+use crate::parallel;
 
 /// Max walk depth from a root (root = 0). Bounds monorepo scans.
 const MAX_DEPTH: usize = 4;
@@ -21,84 +22,114 @@ impl Scanner for WorktreesScanner {
 
     fn scan(&self, ctx: &ScanContext) -> Vec<Candidate> {
         let has_git = ctx.runner.which("git").is_some();
-        let mut out = Vec::new();
+        // Roots of one repo list the same worktrees: keep the first sighting.
+        let mut listed: Vec<Listed> = Vec::new();
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        let mut orphans: Vec<(String, PathBuf, PathBuf)> = Vec::new();
         for root in repo_roots(ctx) {
             let group = display_path(&root, &ctx.home);
-            ctx.note(format!("git worktree list {group}"));
             let root_str = root.to_string_lossy().into_owned();
-
-            let mut git_targets: Vec<PathBuf> = Vec::new();
             if has_git {
-                let listed = ctx.runner.run(
+                ctx.note(format!("git worktree list {group}"));
+                let out = ctx.runner.run(
                     "git",
                     &["-C", &root_str, "worktree", "list", "--porcelain"],
                     None,
                 );
-                if listed.is_success() {
-                    for wt in linked(&parse_worktrees(&listed.stdout)) {
-                        if std::fs::symlink_metadata(&wt.path).is_err() {
-                            continue;
+                if out.is_success() {
+                    for wt in linked(&parse_worktrees(&out.stdout)) {
+                        if std::fs::symlink_metadata(&wt.path).is_ok()
+                            && seen.insert(wt.path.clone())
+                        {
+                            listed.push(Listed {
+                                group: group.clone(),
+                                root: root_str.clone(),
+                                path: wt.path.clone(),
+                                locked: wt.locked,
+                            });
                         }
-                        git_targets.push(wt.path.clone());
-                        let dirty = is_dirty(ctx, &wt.path);
-                        let tier = if dirty || wt.locked {
-                            Tier::Global
-                        } else {
-                            Tier::Local
-                        };
-                        let mut note = Vec::new();
-                        if wt.locked {
-                            note.push("locked");
-                        }
-                        if dirty {
-                            note.push("uncommitted changes");
-                        }
-                        let label = if note.is_empty() {
-                            display_path(&wt.path, &ctx.home)
-                        } else {
-                            format!(
-                                "{} ({})",
-                                display_path(&wt.path, &ctx.home),
-                                note.join(", ")
-                            )
-                        };
-                        let wt_str = wt.path.to_string_lossy().into_owned();
-                        let mut args =
-                            vec!["-C", root_str.as_str(), "worktree", "remove", "--force"];
-                        if wt.locked {
-                            args.push("--force");
-                        }
-                        args.push(wt_str.as_str());
-                        out.push(Candidate::new(
-                            Category::Worktrees,
-                            group.clone(),
-                            label,
-                            Target::action("git", &args, None, vec![wt.path.clone()]),
-                            Size::Skipped,
-                            tier,
-                        ));
                     }
                 }
             }
-
-            // Only orphaned checkouts git no longer knows about; never a
-            // folder holding a git-listed (possibly dirty) worktree.
-            let orphans: Vec<PathBuf> = discover_worktree_folders(&root)
+            let zombies: Vec<PathBuf> = discover_worktree_folders(&root)
                 .into_iter()
-                .filter(|p| is_zombie(p) && !git_targets.iter().any(|g| g.starts_with(p)))
+                .filter(|p| is_zombie(p))
                 .collect();
-            for p in prune_covered_descendants(&orphans) {
-                out.push(Candidate::new(
-                    Category::Worktrees,
-                    group.clone(),
-                    relative_label(&p, &root, &ctx.home),
-                    Target::dir(p),
-                    Size::Skipped,
-                    Tier::Local,
-                ));
-            }
+            orphans.extend(
+                prune_covered_descendants(&zombies)
+                    .into_iter()
+                    .map(|p| (group.clone(), root.clone(), p)),
+            );
         }
+
+        let dirty = parallel::map(listed.iter().map(|l| l.path.as_path()).collect(), |p| {
+            is_dirty(ctx, p)
+        });
+        let mut out: Vec<Candidate> = listed
+            .into_iter()
+            .zip(dirty)
+            .map(|(l, dirty)| l.candidate(dirty, &ctx.home))
+            .collect();
+        // Only orphaned checkouts git no longer knows about; never a folder
+        // holding a git-listed (possibly dirty) worktree.
+        out.extend(
+            orphans
+                .into_iter()
+                .filter(|(_, _, p)| !seen.iter().any(|g| g.starts_with(p)))
+                .map(|(group, root, p)| {
+                    Candidate::new(
+                        Category::Worktrees,
+                        group,
+                        relative_label(&p, &root, &ctx.home),
+                        Target::dir(p),
+                        Size::Skipped,
+                        Tier::Local,
+                    )
+                }),
+        );
         out
+    }
+}
+
+/// A linked worktree git listed under scan root `root`.
+struct Listed {
+    group: String,
+    root: String,
+    path: PathBuf,
+    locked: bool,
+}
+
+impl Listed {
+    fn candidate(self, dirty: bool, home: &Path) -> Candidate {
+        let tier = if dirty || self.locked {
+            Tier::Global
+        } else {
+            Tier::Local
+        };
+        let note: Vec<&str> = [(self.locked, "locked"), (dirty, "uncommitted changes")]
+            .into_iter()
+            .filter_map(|(on, n)| on.then_some(n))
+            .collect();
+        let shown = display_path(&self.path, home);
+        let label = if note.is_empty() {
+            shown
+        } else {
+            format!("{shown} ({})", note.join(", "))
+        };
+        let wt_str = self.path.to_string_lossy().into_owned();
+        let mut args = vec!["-C", self.root.as_str(), "worktree", "remove", "--force"];
+        if self.locked {
+            args.push("--force");
+        }
+        args.push(wt_str.as_str());
+        Candidate::new(
+            Category::Worktrees,
+            self.group,
+            label,
+            Target::action("git", &args, None, vec![self.path.clone()]),
+            Size::Skipped,
+            tier,
+        )
     }
 }
 
@@ -126,9 +157,11 @@ fn repo_roots(ctx: &ScanContext) -> Vec<PathBuf> {
 fn is_dirty(ctx: &ScanContext, worktree: &Path) -> bool {
     ctx.note(format!("git status {}", display_path(worktree, &ctx.home)));
     let wt = worktree.to_string_lossy();
-    let status = ctx
-        .runner
-        .run("git", &["-C", &wt, "status", "--porcelain"], None);
+    let status = ctx.runner.run(
+        "git",
+        &["--no-optional-locks", "-C", &wt, "status", "--porcelain"],
+        None,
+    );
     status.is_success() && !status.stdout.trim().is_empty()
 }
 
@@ -700,6 +733,32 @@ branch refs/heads/dirty
             found.iter().all(|c| c.target.path().is_none()),
             "no fs path may cover a git worktree: {found:?}"
         );
+    }
+
+    #[test]
+    fn scanner_lists_each_worktree_once_across_roots_of_one_repo() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        mkdir(&root, "app");
+        mkdir(&root, "wt/a");
+        let porcelain = format!(
+            "worktree {r}\nHEAD a\n\nworktree {r}/wt/a\nHEAD b\n",
+            r = root.display()
+        );
+        let runner = FakeRunner::new(&["git"]).respond("git", RunResult::success(porcelain));
+        let roots = vec![root.clone(), root.join("app")];
+        let c = ctx(&roots, &[], tmp.path(), vec![], &runner);
+
+        let found = WorktreesScanner.scan(&c);
+
+        assert_eq!(found.len(), 1, "{found:?}");
+        let status: Vec<Vec<String>> = runner
+            .calls()
+            .into_iter()
+            .filter(|c| c.iter().any(|a| a == "status"))
+            .collect();
+        assert_eq!(status.len(), 1, "{status:?}");
+        assert!(status[0].contains(&"--no-optional-locks".to_string()));
     }
 
     #[test]

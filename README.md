@@ -41,7 +41,7 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 `mdev purge [PATH...]` is the one command to keep a developer machine clean. It runs in four steps:
 
 1. **Scan** — nine scanners run in parallel and collect candidates with their on-disk size. Project artifacts are looked for under `PATH...` (default: the current directory, recursing up to 6 levels so `~/projects/<group>/<repo>` layouts are found). Everything else is home-wide. While it runs you see what takes the time: a spinner with the directory count and current folder during project discovery, one live line per category showing the path or command it is on, then a bar while sizes are computed in parallel.
-2. **Select** — a full-screen tree, Category → Group → Item, every row with its size, the header showing *selected of total*. Everything is pre-checked except the **◆ expensive-to-recreate** tier, which is listed but unchecked.
+2. **Select** — a full-screen tree, Category → Group → Item, every row with its size, the header showing *selected of total*. Everything is pre-checked except the **◆ expensive-to-recreate** tier, which is listed but unchecked and never sized (shown as `?`) to keep the scan fast.
 3. **Delete** — the selection is removed in parallel (a progress bar shows progress); command-backed items (`git worktree remove`, `go clean -modcache`, `xcrun simctl delete unavailable`, `docker … prune`) run one after another.
 4. **Report** — per-category counts and bytes freed, a total, and any failures. Exit code is 1 when something failed.
 
@@ -71,7 +71,7 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 | Package caches | `~/.npm`, `~/.pnpm-store`, Yarn, Bun, `~/.pub-cache`, Flutter SDK `bin/cache` (active, FVM and asdf versions), `~/.cargo/registry`, `~/.cargo/git/db`, `~/.gradle/caches`, `~/.gradle/wrapper/dists`, `~/.kotlin`, Go build cache + `go clean -modcache`, pip, poetry, uv, pipenv, bundler, gem, CocoaPods, Homebrew | all ◆ |
 | Docker | `docker builder prune -f` (build cache), `docker container prune -f` (stopped containers) and `docker image prune -af` (all unused images), sized from `docker system df`; only when the daemon answers | build cache checked; containers, images ◆ |
 
-Paths nested under another listed path are collapsed so one wipe covers the tree.
+Paths nested under another listed path are collapsed so one wipe covers the tree. Scan roots nested under another root are dropped; a git repo root that is itself a project (Cargo workspace, plugin + `example/`) is scanned along with its sub-projects. Scan-time tool calls (`git`, `xcrun`, `docker`, `go`…) give up after 10 s.
 
 ### Flags
 

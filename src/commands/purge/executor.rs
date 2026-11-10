@@ -1,14 +1,16 @@
 //! Removes selected candidates: path targets in parallel, action targets
 //! one after another on the calling thread.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use crate::fs_size::{dir_size, SizeMode};
 use crate::parallel;
 use crate::runner::Runner;
 
-use super::candidate::{EntryKind, ItemId, Size, Target};
+use super::candidate::{outermost, EntryKind, ItemId, Size, Target};
 use super::safety::{assert_deletable, SafetyCtx};
+use super::scan::existing;
 use super::tree::SelectionTree;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,26 +84,11 @@ pub fn execute(
                 outcomes.push(done(id, size, None, on_done));
                 continue;
             }
-            // Skipped-size candidates are never walked, not even to measure freed bytes.
-            let measure = tree.candidate(id).size != Size::Skipped;
-            let walk = |ps: &[std::path::PathBuf]| -> u64 {
-                if measure {
-                    ps.iter().map(|p| dir_size(p, opts.size_mode)).sum()
-                } else {
-                    0
-                }
-            };
-            let before = walk(affects);
             let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
             let cwd_str = cwd.as_ref().map(|p| p.to_string_lossy().into_owned());
             let result = runner.run(exe, &arg_refs, cwd_str.as_deref());
             if result.is_success() {
-                let after = walk(affects);
-                let freed = if affects.is_empty() {
-                    size
-                } else {
-                    before.saturating_sub(after)
-                };
+                let freed = freed_by_action(affects, tree.candidate(id).size, opts.size_mode);
                 outcomes.push(done(id, freed, None, on_done));
             } else {
                 let msg = if result.stderr.is_empty() {
@@ -142,20 +129,33 @@ fn remove(path: &Path, kind: EntryKind) -> std::io::Result<()> {
     }
 }
 
+/// Bytes a successful action freed. The scan size is the "before"; only
+/// `affects` paths that survived are walked, and never for `Skipped` sizes.
+fn freed_by_action(affects: &[PathBuf], size: Size, mode: SizeMode) -> u64 {
+    match size {
+        Size::Bytes(b) => b.saturating_sub(
+            existing(affects.to_vec())
+                .iter()
+                .map(|p| dir_size(p, mode))
+                .sum(),
+        ),
+        Size::Unknown | Size::Skipped => 0,
+    }
+}
+
 /// Path items whose path lies under another selected path item.
 fn covered_by_parent(tree: &SelectionTree, items: &[ItemId]) -> Vec<ItemId> {
     let paths: Vec<(ItemId, &Path)> = items
         .iter()
         .filter_map(|id| tree.candidate(*id).target.path().map(|p| (*id, p)))
         .collect();
+    let roots: HashSet<&Path> = outermost(paths.iter().map(|(_, p)| *p).collect())
+        .into_iter()
+        .collect();
     paths
-        .iter()
-        .filter(|(id, p)| {
-            paths
-                .iter()
-                .any(|(other, parent)| other != id && *p != *parent && p.starts_with(parent))
-        })
-        .map(|(id, _)| *id)
+        .into_iter()
+        .filter(|(_, p)| !roots.contains(p))
+        .map(|(id, _)| id)
         .collect()
 }
 
@@ -328,8 +328,8 @@ mod tests {
             "go",
             "mod cache",
             Target::action("go", &["clean", "-modcache"], None, vec![cache.clone()]),
-            Size::Unknown,
-            Tier::Global,
+            Size::Bytes(500),
+            Tier::Local,
         );
         let failing = Candidate::new(
             Category::Docker,
@@ -369,6 +369,92 @@ mod tests {
         assert_eq!(out[1].error.as_deref(), Some("daemon not running"));
     }
 
+    /// Removes the given paths when invoked.
+    struct RmRunner(Vec<std::path::PathBuf>);
+    impl Runner for RmRunner {
+        fn run(&self, _exe: &str, _args: &[&str], _cwd: Option<&str>) -> RunResult {
+            self.0.iter().for_each(|p| fs::remove_dir_all(p).unwrap());
+            RunResult::success(String::new())
+        }
+        fn which(&self, _exe: &str) -> Option<String> {
+            None
+        }
+    }
+
+    fn action_cand(affects: Vec<std::path::PathBuf>, size: u64) -> Candidate {
+        Candidate::new(
+            Category::Docker,
+            "g",
+            "a",
+            Target::action("x", &[], None, affects),
+            Size::Bytes(size),
+            Tier::Local,
+        )
+    }
+
+    #[test]
+    fn action_freeing_everything_reports_scan_size_without_walking() {
+        let home = TempDir::new().unwrap();
+        let a = home.path().join("a");
+        fs::create_dir_all(&a).unwrap();
+        fs::write(a.join("blob"), vec![0u8; 500]).unwrap();
+        let tree = SelectionTree::build(vec![action_cand(vec![a.clone()], 300)]);
+        let out = execute(
+            &tree,
+            &[ItemId(0)],
+            &RmRunner(vec![a]),
+            &opts(home.path()),
+            &|_| {},
+        );
+        assert_eq!(out[0].bytes_freed, 300, "before must be the scan size");
+    }
+
+    #[test]
+    fn action_partially_freeing_measures_only_what_remains() {
+        let home = TempDir::new().unwrap();
+        let (a, b) = (home.path().join("a"), home.path().join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("blob"), vec![0u8; 500]).unwrap();
+        fs::write(b.join("blob"), vec![0u8; 200]).unwrap();
+        let tree = SelectionTree::build(vec![action_cand(vec![a.clone(), b], 1000)]);
+        let out = execute(
+            &tree,
+            &[ItemId(0)],
+            &RmRunner(vec![a]),
+            &opts(home.path()),
+            &|_| {},
+        );
+        assert_eq!(out[0].bytes_freed, 800);
+    }
+
+    #[test]
+    fn covered_by_parent_is_not_quadratic() {
+        let cands: Vec<Candidate> = (0..40_000)
+            .map(|i| dir_cand(Path::new(&format!("/r/p{i}")), 1))
+            .collect();
+        let tree = SelectionTree::build(cands);
+        let items = tree.selected_items();
+        let started = std::time::Instant::now();
+        assert!(covered_by_parent(&tree, &items).is_empty());
+        assert!(started.elapsed().as_secs() < 3, "{:?}", started.elapsed());
+    }
+
+    #[test]
+    fn covered_by_parent_is_component_wise() {
+        let tree = SelectionTree::build(vec![
+            dir_cand(Path::new("/r/a"), 1),
+            dir_cand(Path::new("/r/ab"), 1),
+            dir_cand(Path::new("/r/a/x"), 1),
+        ]);
+        let covered = covered_by_parent(&tree, &tree.selected_items());
+        let labels: Vec<&str> = covered
+            .iter()
+            .map(|id| tree.candidate(*id).label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["/r/a/x"]);
+    }
+
     #[test]
     fn skipped_size_action_is_not_measured() {
         let home = TempDir::new().unwrap();
@@ -384,20 +470,10 @@ mod tests {
             Tier::Local,
         );
         let tree = SelectionTree::build(vec![cand]);
-        struct RmRunner(std::path::PathBuf);
-        impl Runner for RmRunner {
-            fn run(&self, _exe: &str, _args: &[&str], _cwd: Option<&str>) -> RunResult {
-                fs::remove_dir_all(&self.0).unwrap();
-                RunResult::success(String::new())
-            }
-            fn which(&self, _exe: &str) -> Option<String> {
-                None
-            }
-        }
         let out = execute(
             &tree,
             &[ItemId(0)],
-            &RmRunner(wt.clone()),
+            &RmRunner(vec![wt.clone()]),
             &opts(home.path()),
             &|_| {},
         );

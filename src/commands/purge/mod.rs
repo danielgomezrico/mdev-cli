@@ -1,6 +1,6 @@
 //! `mdev purge` — scan everything purgeable, pick in a tree, delete in parallel.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -22,7 +22,7 @@ pub mod scan;
 pub mod text_ui;
 pub mod tree;
 
-use candidate::{display_path, Category, Tier};
+use candidate::{display_path, outermost, Category, Tier};
 use executor::ExecOptions;
 use safety::SafetyCtx;
 use scan::ScanEvent;
@@ -267,56 +267,31 @@ fn enabled(cat: Category, only: &[Category], skip: &[Category]) -> bool {
     !skip.contains(&cat)
 }
 
-/// Canonical, deduplicated scan roots; cwd when none given.
+/// Canonical scan roots, sorted, without roots nested under another (the
+/// outer walk covers them); cwd when none given.
 fn scan_roots(paths: &[PathBuf]) -> Vec<PathBuf> {
     let given: Vec<PathBuf> = if paths.is_empty() {
         vec![std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))]
     } else {
         paths.to_vec()
     };
-    let mut out: Vec<PathBuf> = Vec::new();
-    for p in given {
-        let canon = std::fs::canonicalize(&p).unwrap_or(p);
-        if !out.contains(&canon) {
-            out.push(canon);
-        }
-    }
-    out
+    outermost(
+        given
+            .into_iter()
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect(),
+    )
 }
 
-/// Discover every project under `start_dir` — downward only, with
-/// nested-path deduplication (a child repo is not listed separately when its
-/// parent path is already a detected project root).
+/// Discover every project under `start_dir` — downward only. A repo-root
+/// scan root is listed together with its sub-projects.
 pub(crate) fn collect_projects(
     start_dir: &Path,
     on_visit: &mut dyn FnMut(&Path),
 ) -> Vec<(AppInfo, PathBuf)> {
-    let mut projects: HashMap<String, (AppInfo, PathBuf)> = HashMap::new();
-    for (info, root) in AppDetector::new().discover_projects_with(start_dir, on_visit) {
-        let key = root.to_string_lossy().to_string();
-        projects.insert(key, (info, root));
-    }
-
-    let keys: Vec<String> = projects.keys().cloned().collect();
-    let mut to_remove: Vec<String> = Vec::new();
-    for a in &keys {
-        for b in &keys {
-            if a != b {
-                let b_with_sep = format!("{}{}", b, std::path::MAIN_SEPARATOR);
-                if a.starts_with(&b_with_sep) {
-                    to_remove.push(a.clone());
-                    break;
-                }
-            }
-        }
-    }
-    for key in to_remove {
-        projects.remove(&key);
-    }
-
-    let mut sorted: Vec<(AppInfo, PathBuf)> = projects.into_values().collect();
-    sorted.sort_by(|a, b| a.1.cmp(&b.1));
-    sorted
+    let mut found = AppDetector::new().discover_projects_with(start_dir, on_visit);
+    found.dedup_by(|a, b| a.1 == b.1);
+    found
 }
 
 #[cfg(test)]
@@ -362,6 +337,21 @@ mod tests {
         let roots = scan_roots(&[p.clone(), p.clone()]);
         assert_eq!(roots.len(), 1);
         assert_eq!(scan_roots(&[]).len(), 1);
+    }
+
+    #[test]
+    fn scan_roots_drop_roots_nested_under_another() {
+        let tmp = TempDir::new().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        for d in ["a/sub", "ab"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let roots = scan_roots(&[
+            tmp.path().join("a/sub"),
+            tmp.path().join("ab"),
+            tmp.path().join("a"),
+        ]);
+        assert_eq!(roots, vec![base.join("a"), base.join("ab")]);
     }
 
     fn rel_paths(projects: &[(AppInfo, PathBuf)], base: &Path) -> Vec<String> {
@@ -425,6 +415,16 @@ mod tests {
             ]
         );
         assert!(got.iter().all(|(_, p)| p != tmp.path()));
+    }
+
+    #[test]
+    fn collect_projects_keeps_repo_root_and_its_sub_projects() {
+        let tmp = TempDir::new().unwrap();
+        touch(&tmp.path().join(".git/HEAD"), "");
+        touch(&tmp.path().join("pubspec.yaml"), "name: plugin\n");
+        touch(&tmp.path().join("example/pubspec.yaml"), "name: example\n");
+        let got = collect_projects(tmp.path(), &mut |_| {});
+        assert_eq!(rel_paths(&got, tmp.path()), vec!["", "example"]);
     }
 
     #[test]

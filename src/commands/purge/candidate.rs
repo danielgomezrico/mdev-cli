@@ -1,5 +1,6 @@
 //! Purgeable things discovered by scanners, before any selection or deletion.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use clap::ValueEnum;
@@ -144,6 +145,8 @@ pub struct Candidate {
 }
 
 impl Candidate {
+    /// `Global` candidates are never measured (`Size::Skipped`): they are
+    /// unchecked by default, so walking them only slows the scan.
     pub fn new(
         category: Category,
         group: impl Into<String>,
@@ -157,7 +160,11 @@ impl Candidate {
             group: group.into(),
             label: label.into(),
             target,
-            size,
+            size: if tier == Tier::Global {
+                Size::Skipped
+            } else {
+                size
+            },
             tier,
         }
     }
@@ -175,34 +182,32 @@ pub struct ItemId(pub usize);
 /// wipe covers them. Component-wise (`/a/b` does not cover `/a/bc`). Actions
 /// are always kept. Output keeps input order.
 pub fn dedupe_covered(cands: Vec<Candidate>) -> Vec<Candidate> {
-    let mut roots: Vec<PathBuf> = cands
-        .iter()
-        .filter_map(|c| c.target.path().map(Path::to_path_buf))
+    let paths: Vec<&Path> = cands.iter().filter_map(|c| c.target.path()).collect();
+    let mut keep: HashSet<PathBuf> = outermost(paths)
+        .into_iter()
+        .map(Path::to_path_buf)
         .collect();
-    roots.sort();
-    roots.dedup();
-    let mut keep_roots: Vec<PathBuf> = Vec::new();
-    for p in roots {
-        if !keep_roots.iter().any(|parent| p.starts_with(parent)) {
-            keep_roots.push(p);
-        }
-    }
-    let mut seen: Vec<PathBuf> = Vec::new();
     cands
         .into_iter()
-        .filter(|c| match c.target.path() {
-            None => true,
-            Some(p) => {
-                let kept = keep_roots.iter().any(|k| k == p);
-                if kept && !seen.iter().any(|s| s == p) {
-                    seen.push(p.to_path_buf());
-                    true
-                } else {
-                    false
-                }
-            }
-        })
+        .filter(|c| c.target.path().is_none_or(|p| keep.remove(p)))
         .collect()
+}
+
+/// Sorted, deduplicated paths not nested under another one. Component-wise
+/// ordering puts every descendant right after its ancestor, so one sweep
+/// against the last kept path suffices.
+pub fn outermost<P: AsRef<Path>>(mut paths: Vec<P>) -> Vec<P> {
+    paths.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+    let mut out: Vec<P> = Vec::with_capacity(paths.len());
+    for p in paths {
+        if !out
+            .last()
+            .is_some_and(|l| p.as_ref().starts_with(l.as_ref()))
+        {
+            out.push(p);
+        }
+    }
+    out
 }
 
 /// `~`-abbreviated path for display.
@@ -244,6 +249,30 @@ mod tests {
         ];
         let got: Vec<String> = dedupe_covered(cands).into_iter().map(|c| c.label).collect();
         assert_eq!(got, vec!["/repo/worktree", "/repo/worktrees"]);
+    }
+
+    #[test]
+    fn global_candidates_are_never_sized() {
+        let c = Candidate::new(
+            Category::PackageCaches,
+            "g",
+            "x",
+            Target::dir(PathBuf::from("/a")),
+            Size::Bytes(9),
+            Tier::Global,
+        );
+        assert_eq!(c.size, Size::Skipped);
+        assert_eq!(path_cand("/b").size, Size::Bytes(1));
+    }
+
+    #[test]
+    fn dedupe_is_not_quadratic() {
+        let cands: Vec<Candidate> = (0..40_000)
+            .map(|i| path_cand(&format!("/r/p{i}")))
+            .collect();
+        let started = std::time::Instant::now();
+        assert_eq!(dedupe_covered(cands).len(), 40_000);
+        assert!(started.elapsed().as_secs() < 3, "{:?}", started.elapsed());
     }
 
     #[test]

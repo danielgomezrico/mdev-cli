@@ -112,8 +112,8 @@ impl Scanner for PackageCachesScanner {
                         Category::PackageCaches,
                         "Go",
                         format!("{} (go clean -modcache)", display_path(&p, home)),
-                        Target::action("go", &["clean", "-modcache"], None, vec![p.clone()]),
-                        ctx.size_of(&p),
+                        Target::action("go", &["clean", "-modcache"], None, vec![p]),
+                        Size::Skipped,
                         Tier::Global,
                     ));
                 }

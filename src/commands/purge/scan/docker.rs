@@ -162,12 +162,12 @@ mod tests {
                 (
                     "$ docker container prune -f".into(),
                     Tier::Global,
-                    Size::Bytes(80_000_000)
+                    Size::Skipped
                 ),
                 (
                     "$ docker image prune -af".into(),
                     Tier::Global,
-                    Size::Bytes(1_500_000_000)
+                    Size::Skipped
                 ),
             ]
         );
