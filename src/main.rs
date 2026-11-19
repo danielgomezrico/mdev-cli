@@ -10,8 +10,7 @@ mod tui;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use commands::{
-    clear::ClearArgs, completions::CompletionsArgs, doall::DoallArgs, doctor,
-    emulator::EmulatorArgs, fix::FixArgs, keystore::KeystoreArgs, kill::KillArgs, purge::PurgeArgs,
+    clear::ClearArgs, doctor, emulator::EmulatorArgs, kill::KillArgs, purge::PurgeArgs,
     reboot::RebootArgs, simulator::SimulatorArgs, uninstall::UninstallArgs,
 };
 use runner::ProcessRunner;
@@ -53,27 +52,15 @@ enum Commands {
     /// Find and delete build artifacts, caches, temp files, logs and stale worktrees
     #[command(visible_alias = "p")]
     Purge(PurgeArgs),
-    /// Generate an Android signing keystore
-    #[command(visible_alias = "k")]
-    Keystore(KeystoreArgs),
     /// Manage Android AVD emulators (e.g. config tweaks)
     #[command(visible_alias = "e")]
     Emulator(EmulatorArgs),
     /// Turn an iOS simulator or Android emulator on (`sim i` / `sim a`) or off (`--off`)
     #[command(visible_alias = "sim")]
     Simulator(SimulatorArgs),
-    /// Repair a broken dev environment (e.g. an Android emulator that lost its network)
-    #[command(visible_alias = "f")]
-    Fix(FixArgs),
     /// Check development environment
     #[command(visible_alias = "d")]
     Doctor,
-    /// Run a command in every immediate subfolder of a parent directory (in parallel)
-    #[command(visible_alias = "a")]
-    Doall(DoallArgs),
-    /// Generate shell completion script (bash, zsh, fish, powershell, elvish)
-    #[command(visible_alias = "s")]
-    Completions(CompletionsArgs),
 }
 
 fn main() {
@@ -98,13 +85,9 @@ fn main() {
         Some(Commands::Kill(ref args)) => commands::kill::run(args, &runner),
         Some(Commands::Reboot(ref args)) => commands::reboot::run(args, &runner),
         Some(Commands::Purge(ref args)) => commands::purge::run(args, &runner),
-        Some(Commands::Keystore(ref args)) => commands::keystore::run(args, &runner),
         Some(Commands::Emulator(ref args)) => commands::emulator::run(args, &runner),
         Some(Commands::Simulator(ref args)) => commands::simulator::run(args, &runner),
-        Some(Commands::Fix(ref args)) => commands::fix::run(args, &runner),
         Some(Commands::Doctor) => doctor::run(&runner),
-        Some(Commands::Doall(ref args)) => commands::doall::run(args),
-        Some(Commands::Completions(ref args)) => commands::completions::run::<Cli>(args),
     };
 
     std::process::exit(exit_code);

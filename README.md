@@ -24,17 +24,13 @@ Every command has a one-letter alias (e.g. `mdev u` == `mdev uninstall`).
 | `mdev kill` | `x` | Kill the running process for the current project — force-stops the app on devices (Flutter/Android/iOS) or kills the dev server (Node, Rust, Go, Ruby/Rails, Python) |
 | `mdev reboot` | `r` | Restart the running process — relaunches the app on devices (Flutter/Android/iOS), or kills the dev server and prints its start command (Node, Rust, Go, Ruby/Rails, Python) |
 | `mdev purge` | `p` | Interactive tree of everything purgeable — project artifacts, git worktrees, temp dirs, logs, Xcode, Android SDK, package caches, Docker — with sizes; deletes the selection in parallel and reports space freed |
-| `mdev keystore` | `k` | Interactively generate an Android signing keystore |
 | `mdev emulator config` | `e c` | Apply config tweaks (e.g. `showAVDManager=no`) to every local Android AVD |
 | `mdev emulator list` | `e l` | List known AVD config.ini tweaks |
 | `mdev simulator ios` | `sim i` | Boot an iOS simulator (newest runtime, reuses a booted one) and open Simulator.app |
 | `mdev simulator ios --off` | `sim i -o` | Shut down the booted simulator matching `--device` |
 | `mdev simulator android` | `sim a` | Start an Android AVD and wait until it finishes booting (reuses a running AVD) |
 | `mdev simulator android --off` | `sim a -o` | Stop the `--avd` emulator, or every running emulator when `--avd` is omitted |
-| `mdev fix android` | `f a` | Repair a running Android emulator that lost its network (Wi-Fi "!", nothing loads) |
 | `mdev doctor` | `d` | Check development environment (flutter, adb, java, xcode, etc.) |
-| `mdev doall` | `a` | Run a command in every immediate subfolder of a parent dir, in parallel |
-| `mdev completions` | `s` | Generate shell completion script |
 
 ## Purge
 
@@ -109,7 +105,7 @@ make install
 
 ## Usage
 
-Run any command from within your project directory. `uninstall`, `clear`, `keystore`, `emulator`, and `doctor` target Flutter/Android/iOS; `kill`, `reboot`, and `purge` work across every supported ecosystem (see the table above).
+Run any command from within your project directory. `uninstall`, `clear`, `emulator`, `simulator`, and `doctor` target Flutter/Android/iOS; `kill`, `reboot`, and `purge` work across every supported ecosystem (see the table above).
 
 ```sh
 # Uninstall from whatever is attached. Boots an Android emulator when nothing is.
@@ -140,67 +136,15 @@ mdev purge --only projects,extras -y       # non-interactive: delete default sel
 mdev purge --skip docker,xcode             # leave Docker and Xcode alone
 mdev purge --tmp-age 7 --all               # temp entries older than 7 days, globals pre-selected
 
-# Generate a release keystore
-mdev keystore
-
 # Configure all local Android AVDs (default: showAVDManager=no)
 mdev emulator config              # apply defaults
 mdev emulator config -n           # dry run
 mdev emulator config --set hw.keyboard=yes --backup
 mdev emulator config --avd Pixel_9
 
-# Fix an emulator whose Wi-Fi shows "!" and never loads anything
-mdev fix android                           # every running emulator
-mdev fix a --avd Pixel_9                   # just this one
-mdev fix a --dns 8.8.8.8,1.1.1.1           # force these DNS servers on the restart
-mdev fix a --no-restart                    # diagnose + guest-side fixes only
-mdev fix a -y                              # do not ask before cold-booting
-
 # Check your dev environment
 mdev doctor
-
-# Run a command in every subfolder of the current dir (parallel)
-mdev doall git status
-mdev doall nexusindex
-mdev doall -C ~/projects gitnexus analyze --embeddings --index-only
 ```
-
-## Fixing a broken emulator network
-
-An Android emulator forwards DNS to whatever resolvers the host had **when it booted**. Change network, drop a VPN, or lose the resolver that was listening on `127.x`, and every lookup inside the guest times out: packets still flow (the gateway answers, `ping 8.8.8.8` works), but no name resolves, so the status bar shows Wi-Fi with a "!" and nothing loads.
-
-`mdev fix android` probes for that state and applies the smallest repair that works, in order:
-
-1. Enable airplane mode if it is off. The guest repair only succeeds while the cell radio is off, so this runs before every later step and again after a cold boot, which comes up with radios on.
-2. Toggle Wi-Fi, which forces Android to re-run network validation and clears a stale "!".
-3. Cold-boot the AVD with `-dns-server <host resolvers>` — the only fix for a dead resolver, since the emulator re-reads DNS at startup. Loopback resolvers are dropped (the guest cannot reach them) and `8.8.8.8,1.1.1.1` fill the remaining slots.
-
-It targets every running emulator, or just `--avd <name>`, and asks before the restart unless you pass `-y`.
-
-## Shell completions
-
-`mdev completions <shell>` prints a completion script to stdout. Supported shells: `bash`, `zsh`, `fish`, `powershell`, `elvish`.
-
-**zsh** (ensure `~/.zfunc` is on `fpath` and `autoload -U compinit && compinit` runs in `~/.zshrc`):
-
-```sh
-mkdir -p ~/.zfunc
-mdev completions zsh > ~/.zfunc/_mdev
-```
-
-**bash**:
-
-```sh
-mdev completions bash > ~/.local/share/bash-completion/completions/mdev
-```
-
-**fish**:
-
-```sh
-mdev completions fish > ~/.config/fish/completions/mdev.fish
-```
-
-Restart the shell after installing.
 
 ## Flags
 
@@ -217,7 +161,6 @@ Most commands support:
 - **Android**: `adb` in PATH
 - **iOS**: macOS + Xcode with `xcrun simctl`
 - **Flutter**: `flutter` in PATH
-- **Keystore**: JDK with `keytool`
 
 ## License
 

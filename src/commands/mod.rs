@@ -1,12 +1,8 @@
 pub mod clear;
-pub mod completions;
 pub mod device_op;
 pub mod device_outcome;
-pub mod doall;
 pub mod doctor;
 pub mod emulator;
-pub mod fix;
-pub mod keystore;
 pub mod kill;
 pub mod purge;
 pub mod reboot;

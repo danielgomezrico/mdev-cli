@@ -1,5 +1,4 @@
 use colored::Colorize;
-use dialoguer::{Confirm, Input, Password};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::time::Duration;
 
@@ -31,28 +30,6 @@ impl Logger {
 
     pub fn detail(&self, msg: &str) {
         println!("{}", msg.dimmed());
-    }
-
-    pub fn prompt(&self, msg: &str) -> String {
-        Input::new()
-            .with_prompt(msg)
-            .interact_text()
-            .unwrap_or_default()
-    }
-
-    pub fn prompt_password(&self, msg: &str) -> String {
-        Password::new()
-            .with_prompt(msg)
-            .interact()
-            .unwrap_or_default()
-    }
-
-    pub fn confirm(&self, msg: &str, default_value: bool) -> bool {
-        Confirm::new()
-            .with_prompt(msg)
-            .default(default_value)
-            .interact()
-            .unwrap_or(default_value)
     }
 
     /// Indeterminate spinner with a message. Caller finishes it.
